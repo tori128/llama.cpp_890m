@@ -134,15 +134,28 @@ public:
 
     // block-compressed sparse attention (qwen4exp QSA) over the cells of the indexer cache.
     // Blocks cut the position line, not the cell array, so no caller assumes a contiguous layout:
-    //   cell_blk  I32 [n_kv, ns]           block each cell belongs to
-    //   blk_cells I32 [ratio*n_blocks, ns] cells making up each block
+    //   cell_blk  I32 [n_kv, ns]           block each cell belongs to, null for direct block top-k
+    //   blk_cells I32 [ratio*n_blocks, ns] cells making up each block for key pooling
+    //   blk_select_cells I32 [ratio*n_blocks, ns] complete blocks, n_kv sentinel otherwise
+    //   tail_cells I32 [ratio-1, n_tokens/ns, ns] visible incomplete tail, n_kv sentinel padding
+    //   tail_mask F32 [ratio-1, n_tokens/ns, ns] zero for real tail rows, -inf for padding
     //   blk_pos   I32 [4*n_blocks*ns]      mrope position rows of each block's first token
     //   bias      F32 [n_kv, n_tokens/ns, ns] -inf where invisible, large where always visible
     // blk_bias asks for the bias per block instead: [n_blocks, n_tokens/ns, ns]. The caller then
     // adds the attention mask itself, which is the only part of the bias that varies within a block.
-    void set_input_qsa(ggml_tensor * cell_blk, ggml_tensor * blk_cells, ggml_tensor * blk_pos,
-                       ggml_tensor * bias, const llama_ubatch * ubatch, uint32_t ratio,
-                       bool blk_bias) const;
+    void set_input_qsa(
+            ggml_tensor * cell_blk,
+            ggml_tensor * blk_cells,
+            ggml_tensor * blk_select_cells,
+            ggml_tensor * tail_cells,
+            ggml_tensor * tail_mask,
+            ggml_tensor * blk_pos,
+            ggml_tensor * bias,
+            const llama_ubatch * ubatch,
+            uint32_t ratio,
+            bool blk_bias,
+            bool block_topk,
+            bool direct_gather) const;
 
 private:
     const llama_memory_hybrid_idx * mem = nullptr;

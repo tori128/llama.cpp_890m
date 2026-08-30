@@ -7,6 +7,8 @@
 // note: almost all graphs require at least sqrtf, so include cmath globally
 #include <cmath>
 #include <map>
+#include <mutex>
+#include <tuple>
 
 class llama_memory_hybrid_idx_context;
 
@@ -2309,6 +2311,8 @@ struct llama_model_qwen35 : public llama_model_base {
 struct llama_model_qwen4exp : public llama_model_base {
     llama_model_qwen4exp(const struct llama_model_params & params) : llama_model_base(params) {}
 
+    class llm_graph_input_qsa;
+
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
 
@@ -2319,6 +2323,20 @@ struct llama_model_qwen4exp : public llama_model_base {
         }
         return { per_layer_tok_embd };
     }
+
+    // Copy/dequantize selected PLE rows while retaining their compact on-disk bytes in a
+    // bounded direct-mapped cache. A Q5_1 row is only 120 bytes whereas Linux faults a 4 KiB
+    // page for it, so this is much more memory-efficient than relying on the page cache.
+    void gather_ple_rows(const int32_t * rows, size_t n_rows, float * dst) const;
+
+    mutable std::mutex                  ple_row_cache_mutex;
+    mutable std::vector<int32_t>        ple_row_cache_keys;
+    mutable std::unique_ptr<uint8_t[]>  ple_row_cache_data;
+    mutable size_t                      ple_row_cache_slots    = 0;
+    mutable size_t                      ple_row_cache_row_size = 0;
+    mutable uint64_t                    ple_row_cache_hits     = 0;
+    mutable uint64_t                    ple_row_cache_misses   = 0;
+    mutable uint64_t                    ple_row_cache_calls    = 0;
 
     struct graph : public llm_build_delta_net_base {
         graph(const llama_model & model, const llm_graph_params & params);
@@ -2360,8 +2378,27 @@ struct llama_model_qwen4exp : public llama_model_base {
                     ggml_tensor * k_cur,
                     ggml_tensor * v_cur,
                     ggml_tensor * top_k,
+                    ggml_tensor * selection_mask,
                           float   kq_scale,
                             int   il);
+
+        ggml_tensor * build_attn_qsa_gather(
+                    ggml_tensor * k,
+                    ggml_tensor * v,
+                    ggml_tensor * kq_mask,
+                    ggml_tensor * q_cur,
+                    ggml_tensor * top_k,
+                    ggml_tensor * selection_mask,
+                        int64_t   width,
+                          float   kq_scale,
+                            int   il);
+
+        int64_t qsa_gather_n_sel(int64_t n_kv, int64_t width) const;
+
+        // All QSA layers in Qwen3.8-Flash-Next share the same cache-layout inputs. Include
+        // the two path flags in the key so compact block-topk and fallback masks cannot alias.
+        using qsa_input_key = std::tuple<uint32_t, bool, bool, bool>;
+        std::map<qsa_input_key, llm_graph_input_qsa *> qsa_inps;
 
         // QSA: token indices this layer's queries may attend to, or nullptr for dense
         ggml_tensor * build_qsa_top_k(
@@ -2369,6 +2406,7 @@ struct llama_model_qwen4exp : public llama_model_base {
                     ggml_tensor * cur,
                     ggml_tensor * inp_pos,
                     ggml_tensor * kq_mask,
+                    ggml_tensor ** selection_mask,
                             int * sections,
                             int   il);
 
