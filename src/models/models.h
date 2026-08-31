@@ -1417,6 +1417,13 @@ struct llama_model_dflash : public llama_model_base {
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
 
+    // Laguna drafters use the target architecture's decoder contract: per-aux
+    // feature norms, normalized context K/V, gated attention, and causal blocks.
+    bool decoder_laguna = false;
+
+    // Per-aux RMSNorm weights, stacked as [n_embd, n_aux].
+    ggml_tensor * aux_norm = nullptr;
+
     template <bool is_enc>
     struct graph : public llm_graph_context {
         const llama_model & model;

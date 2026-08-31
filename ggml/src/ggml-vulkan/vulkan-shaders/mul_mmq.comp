@@ -58,7 +58,6 @@ layout (push_constant) uniform parameter
     uint nei1;
     uint nbi1;
     uint ne11;
-    uint padded_N;
     uint use_row_lists;
     uint fusion_flags;
 #else

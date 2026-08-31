@@ -16,6 +16,7 @@
 #include <cassert>
 #include <chrono>
 #include <cinttypes>
+#include <cmath>
 #include <cstring>
 #include <iomanip>
 #include <map>
@@ -935,6 +936,8 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
     const int32_t * target_layer_ids   = nullptr; // model_dft's extract layer indices
     uint32_t        target_layer_ids_n = 0;
+    int32_t         n_layer_tgt        = 0;
+    bool            decoder_laguna     = false;
 
     // scratch buffer for concatenated target features [n_tokens, n_embd_enc]
     std::vector<float> features_buf;
@@ -959,6 +962,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         n_embd_tgt    = llama_model_n_embd(model_tgt);
         n_embd_dec    = llama_model_n_embd(model_dft);
         n_embd_enc    = (int32_t) target_layer_ids_n * n_embd_tgt;
+        n_layer_tgt   = llama_model_n_layer(model_tgt);
 
         // read the trained block size from the dflash.block_size metadata key
         block_size = 16;
@@ -1020,14 +1024,28 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             }
         }
 
-        // turn on extraction of the target layers' input embeddings
+        // An extract id equal to the target layer count denotes the target's
+        // pre-final-norm hidden state rather than a layer input.
         for (uint32_t k = 0; k < target_layer_ids_n; ++k) {
-            llama_set_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k], true);
+            if (target_layer_ids[k] < n_layer_tgt) {
+                llama_set_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k], true);
+            } else if (target_layer_ids[k] == n_layer_tgt) {
+                llama_set_embeddings_nextn(ctx_tgt, true, /*masked*/ false);
+            } else {
+                GGML_ABORT("DFlash: target layer id %d exceeds target n_layer %d",
+                        target_layer_ids[k], n_layer_tgt);
+            }
         }
 
         // DFlash2 reads its selector lattice from h_nextn and never consumes raw logits.
         llama_set_embeddings_nextn(ctx_dft, true, /*masked*/ !is_dflash2);
-        llama_set_causal_attn(ctx_dft, false); // DFlash needs non-causal attention
+        {
+            char buf[32] = {};
+            if (llama_model_meta_val_str(model_dft, "dflash.decoder_arch", buf, sizeof(buf)) >= 0) {
+                decoder_laguna = std::strcmp(buf, "laguna") == 0;
+            }
+        }
+        llama_set_causal_attn(ctx_dft, decoder_laguna);
     }
 
     ~common_speculative_impl_draft_dflash() override {
@@ -1101,7 +1119,9 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             const int32_t n_chunk = std::min(n_ubatch, n_tokens - offset);
             features_buf.resize((size_t) n_chunk * n_embd_enc);
             for (uint32_t k = 0; k < target_layer_ids_n; ++k) {
-                const float * layer = llama_get_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k]);
+                const float * layer = target_layer_ids[k] == n_layer_tgt
+                    ? llama_get_embeddings_nextn(ctx_tgt)
+                    : llama_get_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k]);
                 if (!layer) {
                     GGML_ABORT("DFlash: target layer %d input not extracted.", target_layer_ids[k]);
                 }
@@ -1109,6 +1129,24 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                     float       * dst = features_buf.data() + (size_t) i * n_embd_enc + k * (size_t) n_embd_tgt;
                     const float * src = layer + (size_t) (offset + i) * n_embd_tgt;
                     std::memcpy(dst, src, (size_t) n_embd_tgt * sizeof(float));
+                }
+            }
+
+            if (decoder_laguna) {
+                size_t n_bad = 0;
+                for (float & value : features_buf) {
+                    if (!std::isfinite(value)) {
+                        value = std::isnan(value) ? 0.0f : std::copysign(65504.0f, value);
+                        ++n_bad;
+                    }
+                }
+                if (n_bad > 0) {
+                    static bool warned = false;
+                    if (!warned) {
+                        LOG_WRN("%s: sanitized %zu non-finite Laguna target feature values; "
+                                "draft quality may degrade slightly on affected rows\n", __func__, n_bad);
+                        warned = true;
+                    }
                 }
             }
 
