@@ -2331,19 +2331,8 @@ struct llama_model_qwen4exp : public llama_model_base {
         return { per_layer_tok_embd };
     }
 
-    // Copy/dequantize selected PLE rows while retaining their compact on-disk bytes in a
-    // bounded direct-mapped cache. A Q5_1 row is only 120 bytes whereas Linux faults a 4 KiB
-    // page for it, so this is much more memory-efficient than relying on the page cache.
+    // Copy/dequantize selected PLE rows directly from the compact table.
     void gather_ple_rows(const int32_t * rows, size_t n_rows, float * dst) const;
-
-    mutable std::mutex                  ple_row_cache_mutex;
-    mutable std::vector<int32_t>        ple_row_cache_keys;
-    mutable std::unique_ptr<uint8_t[]>  ple_row_cache_data;
-    mutable size_t                      ple_row_cache_slots    = 0;
-    mutable size_t                      ple_row_cache_row_size = 0;
-    mutable uint64_t                    ple_row_cache_hits     = 0;
-    mutable uint64_t                    ple_row_cache_misses   = 0;
-    mutable uint64_t                    ple_row_cache_calls    = 0;
 
     struct graph : public llm_build_delta_net_base {
         graph(const llama_model & model, const llm_graph_params & params);

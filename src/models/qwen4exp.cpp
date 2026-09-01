@@ -1362,95 +1362,17 @@ void llama_model_qwen4exp::gather_ple_rows(const int32_t * rows, size_t n_rows, 
     const size_t        row_sz   = ggml_row_size(tbl->type, head_dim);
     const char *        base     = (const char *) tbl->data;
 
-    static const int64_t cache_mb = [] {
-        const char * env = getenv("LLAMA_PLE_ROW_CACHE_MB");
-        if (env == nullptr) {
-            return (int64_t) 0;
-        }
-        return std::max<int64_t>(0, std::min<int64_t>(2048, atoll(env)));
-    }();
-    static const bool trace = [] {
-        const char * env = getenv("LLAMA_PLE_ROW_CACHE_TRACE");
-        return env != nullptr && atoi(env) != 0;
-    }();
-
     const ggml_type_traits * traits = tbl->type == GGML_TYPE_F32 ? nullptr : ggml_get_type_traits(tbl->type);
     GGML_ASSERT(tbl->type == GGML_TYPE_F32 || (traits != nullptr && traits->to_float));
 
-    std::lock_guard<std::mutex> lock(ple_row_cache_mutex);
-
-    if (cache_mb > 0 && ple_row_cache_slots == 0) {
-        const size_t budget = (size_t) cache_mb * 1024u * 1024u;
-        const size_t slots  = budget / (row_sz + sizeof(int32_t));
-        try {
-            ple_row_cache_keys.assign(slots, -1);
-            ple_row_cache_data.reset(new uint8_t[slots * row_sz]);
-            ple_row_cache_slots    = slots;
-            ple_row_cache_row_size = row_sz;
-            LLAMA_LOG_INFO("PLE row cache: %" PRId64 " MiB, %zu slots, %zu bytes/row\n",
-                    cache_mb, slots, row_sz);
-        } catch (const std::bad_alloc &) {
-            ple_row_cache_keys.clear();
-            ple_row_cache_data.reset();
-            LLAMA_LOG_WARN("PLE row cache: unable to allocate %" PRId64 " MiB; continuing without it\n", cache_mb);
-        }
-    }
-
-    GGML_ASSERT(ple_row_cache_slots == 0 || ple_row_cache_row_size == row_sz);
-
-    std::vector<int32_t> misses;
-    if (ple_row_cache_slots > 0) {
-        misses.reserve(n_rows);
-        for (size_t k = 0; k < n_rows; ++k) {
-            const uint64_t mixed = (uint64_t) (uint32_t) rows[k] * UINT64_C(11400714819323198485);
-            const size_t slot = (size_t) (mixed % ple_row_cache_slots);
-            if (ple_row_cache_keys[slot] != rows[k]) {
-                misses.push_back(rows[k]);
-            }
-        }
-        prefetch_rows(tbl, misses.data(), misses.size());
-    } else {
-        prefetch_rows(tbl, rows, n_rows);
-    }
-
-    uint64_t call_hits = 0;
-    uint64_t call_misses = 0;
+    prefetch_rows(tbl, rows, n_rows);
     for (size_t k = 0; k < n_rows; ++k) {
         const char * src = base + (size_t) rows[k] * row_sz;
-        if (ple_row_cache_slots > 0) {
-            const uint64_t mixed = (uint64_t) (uint32_t) rows[k] * UINT64_C(11400714819323198485);
-            const size_t slot = (size_t) (mixed % ple_row_cache_slots);
-            uint8_t * cached = ple_row_cache_data.get() + slot * row_sz;
-            if (ple_row_cache_keys[slot] == rows[k]) {
-                src = (const char *) cached;
-                ++call_hits;
-            } else {
-                memcpy(cached, src, row_sz);
-                ple_row_cache_keys[slot] = rows[k];
-                src = (const char *) cached;
-                ++call_misses;
-            }
-        } else {
-            ++call_misses;
-        }
-
         if (tbl->type == GGML_TYPE_F32) {
             memcpy(dst + k * head_dim, src, head_dim * sizeof(float));
         } else {
             traits->to_float(src, dst + k * head_dim, head_dim);
         }
-    }
-
-    ple_row_cache_hits   += call_hits;
-    ple_row_cache_misses += call_misses;
-    ++ple_row_cache_calls;
-    if (trace && (n_rows > (size_t) hparams.ple_n_heads || ple_row_cache_calls <= 4 || ple_row_cache_calls % 64 == 0)) {
-        const uint64_t total = ple_row_cache_hits + ple_row_cache_misses;
-        fprintf(stderr, "ple-row-cache: rows=%zu hit=%" PRIu64 " miss=%" PRIu64
-                " cumulative=%.2f%% calls=%" PRIu64 "\n",
-                n_rows, call_hits, call_misses,
-                total ? 100.0 * (double) ple_row_cache_hits / (double) total : 0.0,
-                ple_row_cache_calls);
     }
 }
 
