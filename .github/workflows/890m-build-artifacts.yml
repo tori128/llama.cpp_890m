@@ -1,0 +1,119 @@
+name: 890M build artifacts
+
+# Build binaries for every pushed commit.  The artifacts are compile-and-package
+# outputs only; runtime validation remains hardware-specific.
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-rocm:
+    name: Linux ROCm (gfx1151)
+    runs-on: ubuntu-24.04
+    container:
+      image: rocm/dev-ubuntu-24.04:7.2.4-complete
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends cmake ninja-build git ca-certificates
+      - name: Configure and build
+        run: |
+          export PATH=/opt/rocm/bin:$PATH
+          cmake -S . -B build-rocm -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_HIP=ON \
+            -DAMDGPU_TARGETS=gfx1151 \
+            -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang \
+            -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
+            -DLLAMA_CURL=OFF \
+            -DGGML_NATIVE=OFF \
+            -DLLAMA_BUILD_TESTS=OFF
+          cmake --build build-rocm -j "$(nproc)"
+      - name: Package
+        run: |
+          mkdir -p dist
+          printf 'commit: %s\nbuilt: %s\nbackend: ROCm HIP gfx1151\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > build-rocm/bin/MANIFEST.txt
+          tar -C build-rocm/bin -czf dist/llama-890m-linux-rocm-gfx1151.tar.gz .
+          ( cd dist && sha256sum *.tar.gz > SHA256SUMS-linux-rocm.txt )
+      - uses: actions/upload-artifact@v6
+        with:
+          name: llama-890m-${{ github.sha }}-linux-rocm-gfx1151
+          path: dist/
+          retention-days: 90
+
+  linux-vulkan:
+    name: Linux Vulkan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Vulkan SDK and build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build wget ca-certificates build-essential
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc > /dev/null
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+      - name: Configure and build
+        run: |
+          source /etc/profile.d/vulkan-sdk.sh 2>/dev/null || true
+          cmake -S . -B build-vulkan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_VULKAN=ON \
+            -DLLAMA_CURL=OFF \
+            -DGGML_NATIVE=OFF \
+            -DLLAMA_BUILD_TESTS=OFF
+          cmake --build build-vulkan -j "$(nproc)"
+      - name: Package
+        run: |
+          mkdir -p dist
+          printf 'commit: %s\nbuilt: %s\nbackend: Vulkan\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > build-vulkan/bin/MANIFEST.txt
+          tar -C build-vulkan/bin -czf dist/llama-890m-linux-vulkan.tar.gz .
+          ( cd dist && sha256sum *.tar.gz > SHA256SUMS-linux-vulkan.txt )
+      - uses: actions/upload-artifact@v6
+        with:
+          name: llama-890m-${{ github.sha }}-linux-vulkan
+          path: dist/
+          retention-days: 90
+
+  windows-vulkan:
+    name: Windows Vulkan
+    runs-on: windows-2025
+    env:
+      VULKAN_VERSION: 1.4.357.0
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Vulkan SDK and Ninja
+        shell: pwsh
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\Bin"
+          choco install ninja --no-progress
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Ninja Multi-Config" -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON -DLLAMA_BUILD_BORINGSSL=ON
+          cmake --build build --config Release -j ${env:NUMBER_OF_PROCESSORS}
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          @"
+          commit: $env:GITHUB_SHA
+          built: $(Get-Date -AsUTC -Format 'yyyy-MM-ddTHH:mm:ssZ')
+          backend: Vulkan
+          "@.Trim() | Set-Content -Path build/bin/Release/MANIFEST.txt
+          Compress-Archive -Path build/bin/Release/* -DestinationPath dist/llama-890m-windows-vulkan.zip
+          (Get-FileHash dist/llama-890m-windows-vulkan.zip -Algorithm SHA256).Hash | Set-Content -NoNewline dist/SHA256SUMS-windows-vulkan.txt
+      - uses: actions/upload-artifact@v6
+        with:
+          name: llama-890m-${{ github.sha }}-windows-vulkan
+          path: dist/
+          retention-days: 90
