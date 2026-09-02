@@ -1,7 +1,7 @@
-name: 890M build artifacts
+name: Unified build artifacts
 
-# Build binaries for every pushed commit.  The artifacts are compile-and-package
-# outputs only; runtime validation remains hardware-specific.
+# Build all public runtime variants after a push.  Hardware execution is
+# validated locally; these artifacts verify compilation and provide binaries.
 on:
   push:
   workflow_dispatch:
@@ -10,8 +10,26 @@ permissions:
   contents: read
 
 jobs:
+  public-audit:
+    name: Public-data audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Check newly published files
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            range="${{ github.event.before }}..${{ github.sha }}"
+          else
+            range="HEAD^..HEAD"
+          fi
+          python3 scripts/ci/public_release_audit.py --range "$range"
+
   linux-rocm:
     name: Linux ROCm (gfx1151)
+    needs: public-audit
     runs-on: ubuntu-24.04
     container:
       image: rocm/dev-ubuntu-24.04:7.2.4-complete
@@ -30,24 +48,27 @@ jobs:
             -DAMDGPU_TARGETS=gfx1151 \
             -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang \
             -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
+            -DLLAMA_BUILD_SERVER=ON \
             -DLLAMA_CURL=OFF \
             -DGGML_NATIVE=OFF \
             -DLLAMA_BUILD_TESTS=OFF
           cmake --build build-rocm -j "$(nproc)"
       - name: Package
         run: |
+          test -x build-rocm/bin/llama-server
           mkdir -p dist
-          printf 'commit: %s\nbuilt: %s\nbackend: ROCm HIP gfx1151\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > build-rocm/bin/MANIFEST.txt
-          tar -C build-rocm/bin -czf dist/llama-890m-linux-rocm-gfx1151.tar.gz .
+          printf 'commit: %s\nbuilt: %s\nplatform: Linux\nbackend: ROCm HIP\ntarget: gfx1151\nruntime: ROCm 7.2 or newer\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > build-rocm/bin/MANIFEST.txt
+          tar -C build-rocm/bin -czf dist/llama-unified-linux-rocm-gfx1151.tar.gz .
           ( cd dist && sha256sum *.tar.gz > SHA256SUMS-linux-rocm.txt )
       - uses: actions/upload-artifact@v6
         with:
-          name: llama-890m-${{ github.sha }}-linux-rocm-gfx1151
+          name: llama-unified-${{ github.sha }}-linux-rocm-gfx1151
           path: dist/
           retention-days: 90
 
   linux-vulkan:
     name: Linux Vulkan
+    needs: public-audit
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -65,24 +86,27 @@ jobs:
           cmake -S . -B build-vulkan -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_VULKAN=ON \
+            -DLLAMA_BUILD_SERVER=ON \
             -DLLAMA_CURL=OFF \
             -DGGML_NATIVE=OFF \
             -DLLAMA_BUILD_TESTS=OFF
           cmake --build build-vulkan -j "$(nproc)"
       - name: Package
         run: |
+          test -x build-vulkan/bin/llama-server
           mkdir -p dist
-          printf 'commit: %s\nbuilt: %s\nbackend: Vulkan\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > build-vulkan/bin/MANIFEST.txt
-          tar -C build-vulkan/bin -czf dist/llama-890m-linux-vulkan.tar.gz .
+          printf 'commit: %s\nbuilt: %s\nplatform: Linux\nbackend: Vulkan\nruntime: system Vulkan driver\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > build-vulkan/bin/MANIFEST.txt
+          tar -C build-vulkan/bin -czf dist/llama-unified-linux-vulkan.tar.gz .
           ( cd dist && sha256sum *.tar.gz > SHA256SUMS-linux-vulkan.txt )
       - uses: actions/upload-artifact@v6
         with:
-          name: llama-890m-${{ github.sha }}-linux-vulkan
+          name: llama-unified-${{ github.sha }}-linux-vulkan
           path: dist/
           retention-days: 90
 
   windows-vulkan:
     name: Windows Vulkan
+    needs: public-audit
     runs-on: windows-2025
     env:
       VULKAN_VERSION: 1.4.357.0
@@ -99,21 +123,95 @@ jobs:
       - name: Configure and build
         shell: pwsh
         run: |
-          cmake -S . -B build -G "Ninja Multi-Config" -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON -DLLAMA_BUILD_BORINGSSL=ON
+          cmake -S . -B build -G "Ninja Multi-Config" -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON -DLLAMA_BUILD_BORINGSSL=ON -DLLAMA_BUILD_TESTS=OFF
           cmake --build build --config Release -j ${env:NUMBER_OF_PROCESSORS}
       - name: Package
         shell: pwsh
         run: |
+          $bin = "build/bin/Release"
+          if (-not (Test-Path "$bin/llama-server.exe")) { throw "llama-server.exe was not built" }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           @"
           commit: $env:GITHUB_SHA
           built: $(Get-Date -AsUTC -Format 'yyyy-MM-ddTHH:mm:ssZ')
+          platform: Windows
           backend: Vulkan
-          "@.Trim() | Set-Content -Path build/bin/Release/MANIFEST.txt
-          Compress-Archive -Path build/bin/Release/* -DestinationPath dist/llama-890m-windows-vulkan.zip
-          (Get-FileHash dist/llama-890m-windows-vulkan.zip -Algorithm SHA256).Hash | Set-Content -NoNewline dist/SHA256SUMS-windows-vulkan.txt
+          runtime: system Vulkan driver
+          "@.Trim() | Set-Content -Path "$bin/MANIFEST.txt"
+          Compress-Archive -Path "$bin/*" -DestinationPath dist/llama-unified-windows-vulkan.zip
+          (Get-FileHash dist/llama-unified-windows-vulkan.zip -Algorithm SHA256).Hash | Set-Content -NoNewline dist/SHA256SUMS-windows-vulkan.txt
       - uses: actions/upload-artifact@v6
         with:
-          name: llama-890m-${{ github.sha }}-windows-vulkan
+          name: llama-unified-${{ github.sha }}-windows-vulkan
+          path: dist/
+          retention-days: 90
+
+  windows-rocm:
+    name: Windows ROCm (gfx1151)
+    needs: public-audit
+    runs-on: windows-2025
+    env:
+      ROCM_VERSION: 7.14.0
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup ROCm
+        uses: ./.github/actions/windows-setup-rocm
+        with:
+          version: ${{ env.ROCM_VERSION }}
+      - name: Setup ROCm environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & C:\TheRock\build\.venv\Scripts\Activate.ps1
+          rocm-sdk init
+          if ($LASTEXITCODE -ne 0) { throw "rocm-sdk init failed with exit code $LASTEXITCODE" }
+          $rocmPath = (rocm-sdk path --root).Trim()
+          $cmakePath = (rocm-sdk path --cmake).Trim()
+          $binPath = (rocm-sdk path --bin).Trim()
+          if (-not $rocmPath) { throw "ROCm path is empty" }
+          Add-Content $env:GITHUB_ENV "HIP_PATH=$rocmPath"
+          Add-Content $env:GITHUB_ENV "CMAKE_PREFIX_PATH=$cmakePath"
+          Add-Content $env:GITHUB_ENV "HIP_DEVICE_LIB_PATH=$rocmPath\lib\llvm\amdgcn\bitcode"
+          Add-Content $env:GITHUB_ENV "HIP_PLATFORM=amd"
+          Add-Content $env:GITHUB_PATH "$binPath"
+          Add-Content $env:GITHUB_PATH "C:\TheRock\build\.venv\Scripts"
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          & "${env:HIP_PATH}\lib\llvm\bin\clang.exe" --version
+          cmake -G "Unix Makefiles" -B build-rocm -S . `
+            -DCMAKE_PREFIX_PATH="${env:HIP_PATH}" `
+            -DCMAKE_C_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang.exe" `
+            -DCMAKE_CXX_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang++.exe" `
+            -DCMAKE_HIP_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang.exe" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DLLAMA_BUILD_SERVER=ON `
+            -DLLAMA_BUILD_BORINGSSL=ON `
+            -DLLAMA_BUILD_TESTS=OFF `
+            -DGGML_BACKEND_DL=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_CPU_ALL_VARIANTS=ON `
+            -DGGML_HIP=ON `
+            -DAMDGPU_TARGETS=gfx1151
+          cmake --build build-rocm -j ${env:NUMBER_OF_PROCESSORS}
+      - name: Package
+        shell: pwsh
+        run: |
+          $bin = "build-rocm/bin"
+          if (-not (Test-Path "$bin/llama-server.exe")) { throw "llama-server.exe was not built" }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          @"
+          commit: $env:GITHUB_SHA
+          built: $(Get-Date -AsUTC -Format 'yyyy-MM-ddTHH:mm:ssZ')
+          platform: Windows
+          backend: ROCm HIP
+          target: gfx1151
+          runtime: ROCm 7.14 runtime
+          "@.Trim() | Set-Content -Path "$bin/MANIFEST.txt"
+          Compress-Archive -Path "$bin/*" -DestinationPath dist/llama-unified-windows-rocm-gfx1151.zip
+          (Get-FileHash dist/llama-unified-windows-rocm-gfx1151.zip -Algorithm SHA256).Hash | Set-Content -NoNewline dist/SHA256SUMS-windows-rocm.txt
+      - uses: actions/upload-artifact@v6
+        with:
+          name: llama-unified-${{ github.sha }}-windows-rocm-gfx1151
           path: dist/
           retention-days: 90
