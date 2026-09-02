@@ -4,7 +4,7 @@ This is a restart note for the Strix Halo Lightning Indexer optimization. It is 
 
 ## Repository state
 
-- Main repository: `/home/jaap/Projects/git/llama.cpp`
+- Main repository: `<repository checkout>`
 - Optimization worktree: `/tmp/llama-strix-beta-bench`
 - Branch: `strix-halo-vulkan-lightning-indexer`
 - Base commit: `316c72ee9eab590f5891089d3b6bfc0d01d00d19`
@@ -135,7 +135,7 @@ Canonical 32k llama-bench. Run it only when needed, never while compiling, and i
 
 ```sh
 cd /tmp/llama-strix-beta-bench
-GGML_VK_PERF_LOGGER=1 ./build/bin/llama-bench -m /home/jaap/Projects/docker/localLLaMA/models/models--unsloth--DeepSeek-V4-Flash-0731-GGUF/snapshots/109848da2469efe1f1aab9e11acea08a065ccd4f/UD-IQ3_XXS/DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004.gguf -r 1 -d 32768 -p 2048 -ub 2048 -fa 1 -n 0 > /tmp/dsv4-lightning-32k-llama-bench.log 2>&1
+GGML_VK_PERF_LOGGER=1 ./build/bin/llama-bench -m <path-to-model.gguf> -r 1 -d 32768 -p 2048 -ub 2048 -fa 1 -n 0 > /tmp/dsv4-lightning-32k-llama-bench.log 2>&1
 last=$(grep -n 'Vulkan Timings:' /tmp/dsv4-lightning-32k-llama-bench.log | tail -n 1 | cut -d: -f1)
 sed -n "${last},\$p" /tmp/dsv4-lightning-32k-llama-bench.log | tail -n 180
 ```
