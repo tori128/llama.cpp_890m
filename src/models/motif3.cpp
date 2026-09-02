@@ -303,7 +303,7 @@ void llama_model_motif3::graph::build_mhc_gates(
 
 ggml_tensor * llama_model_motif3::graph::build_mhc_sinkhorn(ggml_tensor * m, int il) const {
     GGML_UNUSED(il);
-    
+
     for (uint32_t it = 0; it < hparams.motif_mhc_iters; ++it) {
         ggml_tensor * row_sum = ggml_sum_rows(ctx0, m); // [1, hc, nt]
         row_sum = ggml_clamp(ctx0, row_sum, 1e-8f, INFINITY);

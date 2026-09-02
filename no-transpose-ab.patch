@@ -23,7 +23,7 @@ index 823cf65..0581c3c 100644
 +        nbv2_eff = (uint32_t)(nbv2 / ggml_type_size(v->type) * ggml_blck_size(v->type) * sizeof(ggml_fp16_t));
 +        nbv3_eff = (uint32_t)(nbv3 / ggml_type_size(v->type) * ggml_blck_size(v->type) * sizeof(ggml_fp16_t));
      }
- 
+
      const uint32_t alignment = tuning_params.block_cols;
 @@ -10467,8 +10467,8 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
              ctx->prealloc_size_x = k_f16_sz + v_f16_sz;

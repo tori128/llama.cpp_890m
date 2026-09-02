@@ -1714,4 +1714,3 @@ mtmd_image_preproc_out mtmd_image_preprocessor_muse_glimmer::preprocess(const cl
     output.append(hparams, resized_image, true);
     return output;
 }
-
