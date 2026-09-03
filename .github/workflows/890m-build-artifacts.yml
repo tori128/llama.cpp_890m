@@ -190,7 +190,6 @@ jobs:
             -DLLAMA_BUILD_TESTS=OFF `
             -DGGML_BACKEND_DL=ON `
             -DGGML_NATIVE=OFF `
-            -DGGML_CPU_ALL_VARIANTS=ON `
             -DGGML_HIP=ON `
             -DAMDGPU_TARGETS=gfx1151
           cmake --build build-rocm -j ${env:NUMBER_OF_PROCESSORS}
