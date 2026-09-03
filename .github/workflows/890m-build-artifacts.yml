@@ -5,6 +5,15 @@ name: Unified build artifacts
 on:
   push:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: GitHub Release tag
+        required: false
+        type: string
+      release_title:
+        description: GitHub Release title
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -214,3 +223,60 @@ jobs:
           name: llama-unified-${{ github.sha }}-windows-rocm-gfx1151
           path: dist/
           retention-days: 90
+
+  release:
+    name: Publish GitHub Release
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' }}
+    needs:
+      - linux-rocm
+      - linux-vulkan
+      - windows-vulkan
+      - windows-rocm
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v6
+        with:
+          pattern: llama-unified-${{ github.sha }}-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f release-assets/llama-unified-linux-rocm-gfx1151.tar.gz
+          test -f release-assets/llama-unified-linux-vulkan.tar.gz
+          test -f release-assets/llama-unified-windows-rocm-gfx1151.zip
+          test -f release-assets/llama-unified-windows-vulkan.zip
+          test -f release-assets/SHA256SUMS-linux-rocm.txt
+          test -f release-assets/SHA256SUMS-linux-vulkan.txt
+          test -f release-assets/SHA256SUMS-windows-rocm.txt
+          test -f release-assets/SHA256SUMS-windows-vulkan.txt
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TITLE: ${{ inputs.release_title }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_title="$RELEASE_TITLE"
+          if [ -z "$release_title" ]; then
+            release_title="$RELEASE_TAG"
+          fi
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$release_title" \
+            --generate-notes \
+            release-assets/llama-unified-linux-rocm-gfx1151.tar.gz \
+            release-assets/llama-unified-linux-vulkan.tar.gz \
+            release-assets/llama-unified-windows-rocm-gfx1151.zip \
+            release-assets/llama-unified-windows-vulkan.zip \
+            release-assets/SHA256SUMS-linux-rocm.txt \
+            release-assets/SHA256SUMS-linux-vulkan.txt \
+            release-assets/SHA256SUMS-windows-rocm.txt \
+            release-assets/SHA256SUMS-windows-vulkan.txt
