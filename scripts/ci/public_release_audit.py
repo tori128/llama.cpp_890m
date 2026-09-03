@@ -83,11 +83,19 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--range", default=None)
     mode.add_argument("--staged", action="store_true")
+    mode.add_argument("--path", action="append")
     args = parser.parse_args()
 
     if args.staged:
         paths = git("diff", "--cached", "--name-only", "--diff-filter=ACMR").decode().splitlines()
         content_ref = ":{}"
+    elif args.path:
+        paths = args.path
+        for path in paths:
+            posix_path = PurePosixPath(path)
+            if posix_path.is_absolute() or ".." in posix_path.parts:
+                parser.error("--path must be a repository-relative path")
+        content_ref = "HEAD:{}"
     else:
         diff_range = args.range or "HEAD^..HEAD"
         paths = git("diff", "--name-only", "--diff-filter=ACMR", diff_range).decode().splitlines()

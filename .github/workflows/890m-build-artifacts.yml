@@ -14,6 +14,10 @@ on:
         description: GitHub Release title
         required: false
         type: string
+      benchmark_report:
+        description: Sanitized benchmark report filename from docs/development/benchmarks
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -237,12 +241,32 @@ jobs:
       actions: read
       contents: write
     steps:
+      - uses: actions/checkout@v6
       - name: Download build artifacts
         uses: actions/download-artifact@v6
         with:
           pattern: llama-unified-${{ github.sha }}-*
           path: release-assets
           merge-multiple: true
+      - name: Prepare benchmark report
+        if: ${{ inputs.benchmark_report != '' }}
+        env:
+          BENCHMARK_REPORT: ${{ inputs.benchmark_report }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$BENCHMARK_REPORT" in
+            *.md) ;;
+            *) exit 64 ;;
+          esac
+          case "$BENCHMARK_REPORT" in
+            *[!A-Za-z0-9._-]*) exit 64 ;;
+            *) ;;
+          esac
+          benchmark_report_path="docs/development/benchmarks/$BENCHMARK_REPORT"
+          test -f "$benchmark_report_path"
+          python3 scripts/ci/public_release_audit.py --path "$benchmark_report_path"
+          cp "$benchmark_report_path" release-assets/BENCHMARK.md
       - name: Verify release assets
         shell: bash
         run: |
@@ -267,16 +291,34 @@ jobs:
           if [ -z "$release_title" ]; then
             release_title="$RELEASE_TAG"
           fi
+          release_assets=(
+            release-assets/llama-unified-linux-rocm-gfx1151.tar.gz
+            release-assets/llama-unified-linux-vulkan.tar.gz
+            release-assets/llama-unified-windows-rocm-gfx1151.zip
+            release-assets/llama-unified-windows-vulkan.zip
+            release-assets/SHA256SUMS-linux-rocm.txt
+            release-assets/SHA256SUMS-linux-vulkan.txt
+            release-assets/SHA256SUMS-windows-rocm.txt
+            release-assets/SHA256SUMS-windows-vulkan.txt
+          )
+          benchmark_note=""
+          if [ -f release-assets/BENCHMARK.md ]; then
+            release_assets+=(release-assets/BENCHMARK.md)
+            benchmark_note="Benchmark result: attached as BENCHMARK.md."
+          fi
+          release_notes=release-assets/RELEASE_NOTES.md
+          {
+            printf 'Build commit: `%s`\n\n' "$GITHUB_SHA"
+            printf '%s\n' 'Build variants:'
+            printf '%s\n' '- Linux Vulkan'
+            printf '%s\n' '- Linux ROCm (gfx1151)'
+            printf '%s\n' '- Windows Vulkan'
+            printf '%s\n' '- Windows ROCm (gfx1151)'
+            printf '\n%s\n' "$benchmark_note"
+          } > "$release_notes"
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "$release_title" \
-            --generate-notes \
-            release-assets/llama-unified-linux-rocm-gfx1151.tar.gz \
-            release-assets/llama-unified-linux-vulkan.tar.gz \
-            release-assets/llama-unified-windows-rocm-gfx1151.zip \
-            release-assets/llama-unified-windows-vulkan.zip \
-            release-assets/SHA256SUMS-linux-rocm.txt \
-            release-assets/SHA256SUMS-linux-vulkan.txt \
-            release-assets/SHA256SUMS-windows-rocm.txt \
-            release-assets/SHA256SUMS-windows-vulkan.txt
+            --notes-file "$release_notes" \
+            "${release_assets[@]}"
