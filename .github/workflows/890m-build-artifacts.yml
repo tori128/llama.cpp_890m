@@ -315,6 +315,10 @@ jobs:
             printf '%s\n' '- Windows Vulkan'
             printf '%s\n' '- Windows ROCm (gfx1151)'
             printf '\n%s\n' "$benchmark_note"
+            if [ -f release-assets/BENCHMARK.md ]; then
+              printf '\n%s\n\n' '## Benchmark result'
+              cat release-assets/BENCHMARK.md
+            fi
           } > "$release_notes"
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
