@@ -1615,7 +1615,20 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
-    ml.init_mappings(true, use_mlock ? &pimpl->mlock_mmaps : nullptr);
+    bool prefetch_mmaps = true;
+#if defined(GGML_USE_HIP)
+    if (ml.use_mmap) {
+        for (const auto & dev : devices) {
+            ggml_backend_dev_props props;
+            ggml_backend_dev_get_props(dev.dev, &props);
+            if (props.type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                prefetch_mmaps = false;
+                break;
+            }
+        }
+    }
+#endif
+    ml.init_mappings(prefetch_mmaps, use_mlock ? &pimpl->mlock_mmaps : nullptr);
     pimpl->mappings.reserve(ml.mappings.size());
 
     // create the backend buffers
