@@ -308,7 +308,8 @@ jobs:
           fi
           release_notes=release-assets/RELEASE_NOTES.md
           {
-            printf 'Build commit: `%s`\n\n' "$GITHUB_SHA"
+            printf 'GitHub-hosted build artifacts for commit `%s`.\n' "$GITHUB_SHA"
+            printf '%s\n\n' 'Public-data audit and Linux/Windows Vulkan/ROCm builds succeeded.'
             printf '%s\n' 'Build variants:'
             printf '%s\n' '- Linux Vulkan'
             printf '%s\n' '- Linux ROCm (gfx1151)'
