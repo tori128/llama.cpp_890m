@@ -5,51 +5,41 @@
 | CPU | AMD Ryzen AI 9 HX 370 |
 | GPU | AMD Radeon 890M (gfx1150) |
 | Memory | DDR5-6000 |
-| Input | 32,768-token programming prompt |
-| Output measurement | From generation start to natural EOS or 4,096 tokens; cold 32K -> 4K, then two cached 32K -> 4K runs |
-| Cache / memory | Prompt cache enabled after the cold run; 0 KiB VMSwap limit |
-| Comparison | Fork vs. upstream master with matched original runtime; current H2D vs. pre-H2D |
+| Build toolchain | TheRock gfx1150 7.13 |
+| Runtime | ROCm 7.14, identical for every compared server |
+| Input | Model-specific 32,768-token programming prompt; token IDs and seed are identical within each comparison |
+| Output measurement | 4,096 generated tokens; one `cold` 32K -> 4K run followed by two prompt-cache 32K -> 4K runs in the same server process |
+| Cache / swap | Prompt cache enabled after `cold`; `MemorySwapMax=0`; server VmSwap was 0 KiB in every reported segment |
+| GPU memory | GTT peak 720 MiB in every reported segment; GPU peak temperature range 78–95 °C |
+| Comparison | H2D-enabled `a0550d11b` versus upstream master `4d9176092d`, H2D-before `e0a0d2d`, and previous-release `c21d8a925` with identical shortcut parameters |
 
 ## Performance results
 
-### Fork vs. upstream master
+TG cells use the order `cold / cache 1 / cache 2`.
 
-Existing cache-disabled 32K -> 4K measurements: unified `02a6b452a2b4` vs. upstream `67a17c17caa9`.
-
-| Model | Backend | Draft method | Unified prefill | Upstream prefill | Prefill delta | Unified decode (4K) | Upstream decode (4K) | Decode delta |
+| Model | Backend | Draft method | `a0550d11b` prefill | master prefill | Prefill delta | `a0550d11b` TG (4K) | master TG (4K) | TG delta |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3.6 35B-A3B | ROCm 7.14 | MTP, n=2 | 368.62 tok/s | 356.92 tok/s | +3.28% | 20.55 tok/s | 16.06 tok/s | +27.95% |
-| Qwen3.6 35B-A3B | Vulkan | MTP, n=2 | 351.38 tok/s | 262.31 tok/s | +33.96% | 19.31 tok/s | 15.73 tok/s | +22.75% |
-| Qwen3.8 27B | Vulkan | DFlash2 Q8_0, n=4 | 86.23 tok/s | 75.58 tok/s | +14.09% | 6.72 tok/s | 6.55 tok/s | +2.45% |
-| Qwen3.8 Flash-Next | Vulkan | MTP Q4_K_M, n=4 | 108.52 tok/s* | unavailable | -- | 6.66 tok/s* | unavailable | -- |
-
-* Qwen3.8 Flash-Next was measured twice. The difference in 4K decode speed was 0.30%.
-
-### Current H2D validation
-
-`a0550d11b` vs. pre-H2D `e0a0d2d`; decode values are cold / cache 1 / cache 2.
-
-| Model | Backend | Draft method | Unified prefill | Previous prefill | Prefill delta | Unified decode (4K) | Previous decode (4K) | Decode delta |
-| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3.6 35B-A3B | ROCm 7.13 | MTP, n=2 | 360.12 tok/s | 361.36 tok/s | -0.34% | 23.87 / 21.79 / 22.72 tok/s | 24.39 / 19.01 / 20.43 tok/s | -2.13% / +14.61% / +11.21% |
-| Qwen3.8 27B | ROCm 7.14 | DFlash2 Q8_0, n=4 | 102.77 tok/s | 102.90 tok/s | -0.12% | 7.91 / 7.24 / 7.80 tok/s | 8.66 / 6.74 / 8.19 tok/s | -8.58% / +7.35% / -4.82% |
-
-Cold-run GTT: Qwen3.6 896 -> 781 MiB; Qwen3.8 856 -> 739 MiB.
-
-### ROCm startup compatibility
-
-| Model | Previous ROCm | Current ROCm | Server-ready time |
-| --- | --- | --- | ---: |
-| Laguna | Not ready | Ready | 20.10 s |
-| Ling-3.0 | Not ready | Ready | 14.93 s |
-
-HIP iGPU mmap-prefetch suppression enables both models. Vulkan remains selected for decode speed.
+| Qwen3.6 35B-A3B | ROCm | MTP, n=2 | 358.51 tok/s | 282.76 tok/s | +26.79% | 21.34 / 16.67 / 23.47 tok/s | 24.84 / 24.83 / 24.82 tok/s | -14.10% / -32.87% / -5.44% |
+| Qwen3.8 27B | ROCm | DFlash2 Q8_0, n=4 | 101.52 tok/s | 88.86 tok/s | +14.25% | 7.66 / 6.94 / 7.32 tok/s | 6.06 / 6.22 / 5.97 tok/s | +26.26% / +11.57% / +22.47% |
 
 ## Change from previous release
 
-| Model | Backend | Current prefill | Previous-release prefill | Prefill delta | Current decode (4K) | Previous-release decode (4K) | Decode delta |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3.6 35B-A3B | ROCm | 360.12 tok/s | unavailable | -- | 23.87 / 21.79 / 22.72 tok/s | unavailable | -- |
-| Qwen3.8 27B | ROCm | 102.77 tok/s | unavailable | -- | 7.91 / 7.24 / 7.80 tok/s | unavailable | -- |
+The H2D validation and previous-release comparison use the same measurement conditions. `e0a0d2d` is the parent before CPU memory-to-GPU memory transfer (H2D) staging; `c21d8a925` is the previous release.
 
-The previous release used a different configuration and measurement method; directly comparable values are unavailable.
+| Model | Reference | `a0550d11b` prefill | Reference prefill | Prefill delta | `a0550d11b` TG (4K) | Reference TG (4K) | TG delta |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.6 35B-A3B | H2D-before `e0a0d2d` | 358.51 tok/s | 359.98 tok/s | -0.41% | 21.34 / 16.67 / 23.47 tok/s | 22.37 / 20.47 / 18.62 tok/s | -4.62% / -18.56% / +26.06% |
+| Qwen3.6 35B-A3B | Previous release `c21d8a925` | 358.51 tok/s | 360.47 tok/s | -0.54% | 21.34 / 16.67 / 23.47 tok/s | 25.60 / 23.90 / 18.12 tok/s | -16.65% / -30.24% / +29.51% |
+| Qwen3.8 27B | H2D-before `e0a0d2d` | 101.52 tok/s | 101.66 tok/s | -0.14% | 7.66 / 6.94 / 7.32 tok/s | 7.67 / 6.58 / 7.56 tok/s | -0.24% / +5.51% / -3.23% |
+| Qwen3.8 27B | Previous release `c21d8a925` | 101.52 tok/s | 101.40 tok/s | +0.12% | 7.66 / 6.94 / 7.32 tok/s | 7.26 / 6.25 / 7.29 tok/s | +5.41% / +11.03% / +0.31% |
+
+The H2D comparison has both positive and negative TG deltas; neither model has all reported metrics below its H2D-before reference.
+
+## ROCm startup compatibility
+
+| Model | H2D-before `e0a0d2d` | H2D-enabled `a0550d11b` | Server-ready time |
+| --- | --- | --- | ---: |
+| Laguna | Server not ready | Ready | 20.10 s |
+| Ling-3.0 | Server not ready | Ready | 14.93 s |
+
+HIP iGPU mmap-prefetch suppression enables both startup paths. Vulkan remains the selected decode backend for Laguna and Ling-3.0 because their ROCm decode speed was lower.
