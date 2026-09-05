@@ -6,16 +6,15 @@
 | GPU | AMD Radeon 890M (gfx1150) |
 | Memory | DDR5-6000 |
 | Input | 32,768-token programming prompt |
-| Output measurement | One cold 32K -> 4K run followed by two prompt-cache 32K -> 4K runs |
-| Cache | Enabled after the cold run for the two repeated TG measurements |
-| Current-change comparison | Current H2D build vs. the pre-change e0a0d2d build with identical model, token array, seed, and runtime parameters |
-| Upstream comparison | Unified commit `02a6b452a2b4` vs. upstream llama.cpp commit `67a17c17caa9` in existing paired 32K -> 4K measurements with prompt cache disabled |
+| Output measurement | From generation start to natural EOS or 4,096 tokens; cold 32K -> 4K, then two cached 32K -> 4K runs |
+| Cache / memory | Prompt cache enabled after the cold run; 0 KiB VMSwap limit |
+| Comparison | Fork vs. upstream master with matched original runtime; current H2D vs. pre-H2D |
 
 ## Performance results
 
-### Upstream master comparison
+### Fork vs. upstream master
 
-The following existing paired measurements show the fork-versus-upstream result. Each pair used the same model and the then-active shortcut-derived runtime parameters, with prompt cache disabled. They do not measure the H2D change in this release.
+Existing cache-disabled 32K -> 4K measurements: unified `02a6b452a2b4` vs. upstream `67a17c17caa9`.
 
 | Model | Backend | Draft method | Unified prefill | Upstream prefill | Prefill delta | Unified decode (4K) | Upstream decode (4K) | Decode delta |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -26,31 +25,25 @@ The following existing paired measurements show the fork-versus-upstream result.
 
 * Qwen3.8 Flash-Next was measured twice. The difference in 4K decode speed was 0.30%.
 
-### Current ROCm change validation
+### Current H2D validation
 
-The three decode values in each cell are cold / cache 1 / cache 2. Positive deltas are faster.
+`a0550d11b` vs. pre-H2D `e0a0d2d`; decode values are cold / cache 1 / cache 2.
 
 | Model | Backend | Draft method | Unified prefill | Previous prefill | Prefill delta | Unified decode (4K) | Previous decode (4K) | Decode delta |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Qwen3.6 35B-A3B | ROCm 7.13 | MTP, n=2 | 360.12 tok/s | 361.36 tok/s | -0.34% | 23.87 / 21.79 / 22.72 tok/s | 24.39 / 19.01 / 20.43 tok/s | -2.13% / +14.61% / +11.21% |
 | Qwen3.8 27B | ROCm 7.14 | DFlash2 Q8_0, n=4 | 102.77 tok/s | 102.90 tok/s | -0.12% | 7.91 / 7.24 / 7.80 tok/s | 8.66 / 6.74 / 8.19 tok/s | -8.58% / +7.35% / -4.82% |
 
-The Qwen3.6 token array SHA-256 was `2e10e433bdb384ff1716e8c411ef8cfc9d6f2892b1cbc348e0dbac296d0605d4`. The Qwen3.8 token array SHA-256 was `da077f0287ce2f288c79e3295ccc2e2dd40f9efba1fa3d156aded42a68418b34`.
+Cold-run GTT: Qwen3.6 896 -> 781 MiB; Qwen3.8 856 -> 739 MiB.
 
-Each measured process had a 0 KiB VMSwap limit. H2D staging reduced the Qwen3.6 cold-run GTT peak from about 896 MiB to about 781 MiB, and the Qwen3.8 cold-run GTT peak from about 856 MiB to about 739 MiB.
+### ROCm startup compatibility
 
-The upstream rows use the prior cache-disabled 32K -> 4K method. The current H2D validation uses the continuous cold/cache 1/cache 2 method, so it does not provide a direct a0550d11b-versus-upstream delta. A fresh upstream run with the current method is required for that specific comparison.
+| Model | Previous ROCm | Current ROCm | Server-ready time |
+| --- | --- | --- | ---: |
+| Laguna | Not ready | Ready | 20.10 s |
+| Ling-3.0 | Not ready | Ready | 14.93 s |
 
-## ROCm startup compatibility
-
-The previous ROCm configuration did not reach server-ready state while loading the Laguna and Ling-3.0 shortcut-equivalent configurations. With HIP iGPU mmap-prefetch suppression, both configurations reached server-ready state.
-
-| Model | Backend | Previous result | Current result | Server-ready time |
-| --- | --- | --- | --- | ---: |
-| Laguna | ROCm | Did not reach server-ready state | Ready | 20.10 s |
-| Ling-3.0 | ROCm | Did not reach server-ready state | Ready | 14.93 s |
-
-The times use the prefetch-only result because H2D staging does not determine startup compatibility. ROCm decode performance was not preferable for either model, so their desktop shortcuts continue to use Vulkan.
+HIP iGPU mmap-prefetch suppression enables both models. Vulkan remains selected for decode speed.
 
 ## Change from previous release
 
@@ -59,4 +52,4 @@ The times use the prefetch-only result because H2D staging does not determine st
 | Qwen3.6 35B-A3B | ROCm | 360.12 tok/s | unavailable | -- | 23.87 / 21.79 / 22.72 tok/s | unavailable | -- |
 | Qwen3.8 27B | ROCm | 102.77 tok/s | unavailable | -- | 7.91 / 7.24 / 7.80 tok/s | unavailable | -- |
 
-The prior public release used different runtime configurations and did not contain the same three-interval continuous measurement. Its values are therefore not directly comparable. The Current ROCm change validation table gives the exact pre-change comparison for this release.
+The previous release used a different configuration and measurement method; directly comparable values are unavailable.
