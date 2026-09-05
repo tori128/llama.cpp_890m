@@ -8,9 +8,25 @@
 | Input | 32,768-token programming prompt |
 | Output measurement | One cold 32K -> 4K run followed by two prompt-cache 32K -> 4K runs |
 | Cache | Enabled after the cold run for the two repeated TG measurements |
-| Comparison | Current unified build vs. the pre-change e0a0d2d build with identical model, token array, seed, and runtime parameters |
+| Current-change comparison | Current H2D build vs. the pre-change e0a0d2d build with identical model, token array, seed, and runtime parameters |
+| Upstream comparison | Unified commit `02a6b452a2b4` vs. upstream llama.cpp commit `67a17c17caa9` in existing paired 32K -> 4K measurements with prompt cache disabled |
 
 ## Performance results
+
+### Upstream master comparison
+
+The following existing paired measurements show the fork-versus-upstream result. Each pair used the same model and the then-active shortcut-derived runtime parameters, with prompt cache disabled. They do not measure the H2D change in this release.
+
+| Model | Backend | Draft method | Unified prefill | Upstream prefill | Prefill delta | Unified decode (4K) | Upstream decode (4K) | Decode delta |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.6 35B-A3B | ROCm 7.14 | MTP, n=2 | 368.62 tok/s | 356.92 tok/s | +3.28% | 20.55 tok/s | 16.06 tok/s | +27.95% |
+| Qwen3.6 35B-A3B | Vulkan | MTP, n=2 | 351.38 tok/s | 262.31 tok/s | +33.96% | 19.31 tok/s | 15.73 tok/s | +22.75% |
+| Qwen3.8 27B | Vulkan | DFlash2 Q8_0, n=4 | 86.23 tok/s | 75.58 tok/s | +14.09% | 6.72 tok/s | 6.55 tok/s | +2.45% |
+| Qwen3.8 Flash-Next | Vulkan | MTP Q4_K_M, n=4 | 108.52 tok/s* | unavailable | -- | 6.66 tok/s* | unavailable | -- |
+
+* Qwen3.8 Flash-Next was measured twice. The difference in 4K decode speed was 0.30%.
+
+### Current ROCm change validation
 
 The three decode values in each cell are cold / cache 1 / cache 2. Positive deltas are faster.
 
@@ -22,6 +38,8 @@ The three decode values in each cell are cold / cache 1 / cache 2. Positive delt
 The Qwen3.6 token array SHA-256 was `2e10e433bdb384ff1716e8c411ef8cfc9d6f2892b1cbc348e0dbac296d0605d4`. The Qwen3.8 token array SHA-256 was `da077f0287ce2f288c79e3295ccc2e2dd40f9efba1fa3d156aded42a68418b34`.
 
 Each measured process had a 0 KiB VMSwap limit. H2D staging reduced the Qwen3.6 cold-run GTT peak from about 896 MiB to about 781 MiB, and the Qwen3.8 cold-run GTT peak from about 856 MiB to about 739 MiB.
+
+The upstream rows use the prior cache-disabled 32K -> 4K method. The current H2D validation uses the continuous cold/cache 1/cache 2 method, so it does not provide a direct a0550d11b-versus-upstream delta. A fresh upstream run with the current method is required for that specific comparison.
 
 ## ROCm startup compatibility
 
@@ -41,4 +59,4 @@ The times use the prefetch-only result because H2D staging does not determine st
 | Qwen3.6 35B-A3B | ROCm | 360.12 tok/s | unavailable | -- | 23.87 / 21.79 / 22.72 tok/s | unavailable | -- |
 | Qwen3.8 27B | ROCm | 102.77 tok/s | unavailable | -- | 7.91 / 7.24 / 7.80 tok/s | unavailable | -- |
 
-The prior public release used different runtime configurations and did not contain the same three-interval continuous measurement. Its values are therefore not directly comparable. The Performance results table gives the exact pre-change comparison for this release.
+The prior public release used different runtime configurations and did not contain the same three-interval continuous measurement. Its values are therefore not directly comparable. The Current ROCm change validation table gives the exact pre-change comparison for this release.
