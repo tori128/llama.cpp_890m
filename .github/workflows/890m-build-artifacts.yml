@@ -301,23 +301,14 @@ jobs:
             release-assets/SHA256SUMS-windows-rocm.txt
             release-assets/SHA256SUMS-windows-vulkan.txt
           )
-          benchmark_note=""
           if [ -f release-assets/BENCHMARK.md ]; then
             release_assets+=(release-assets/BENCHMARK.md)
-            benchmark_note="Benchmark result: attached as BENCHMARK.md."
           fi
           release_notes=release-assets/RELEASE_NOTES.md
           {
             printf 'GitHub-hosted build artifacts for commit `%s`.\n' "$GITHUB_SHA"
             printf '%s\n\n' 'Public-data audit and Linux/Windows Vulkan/ROCm builds succeeded.'
-            printf '%s\n' 'Build variants:'
-            printf '%s\n' '- Linux Vulkan'
-            printf '%s\n' '- Linux ROCm (gfx1151)'
-            printf '%s\n' '- Windows Vulkan'
-            printf '%s\n' '- Windows ROCm (gfx1151)'
-            printf '\n%s\n' "$benchmark_note"
             if [ -f release-assets/BENCHMARK.md ]; then
-              printf '\n%s\n\n' '## Benchmark result'
               cat release-assets/BENCHMARK.md
             fi
           } > "$release_notes"
