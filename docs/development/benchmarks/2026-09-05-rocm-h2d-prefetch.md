@@ -23,6 +23,17 @@ The Qwen3.6 token array SHA-256 was `2e10e433bdb384ff1716e8c411ef8cfc9d6f2892b1c
 
 Each measured process had a 0 KiB VMSwap limit. H2D staging reduced the Qwen3.6 cold-run GTT peak from about 896 MiB to about 781 MiB, and the Qwen3.8 cold-run GTT peak from about 856 MiB to about 739 MiB.
 
+## ROCm startup compatibility
+
+The previous ROCm configuration did not reach server-ready state while loading the Laguna and Ling-3.0 shortcut-equivalent configurations. With HIP iGPU mmap-prefetch suppression, both configurations reached server-ready state.
+
+| Model | Backend | Previous result | Current result | Server-ready time |
+| --- | --- | --- | --- | ---: |
+| Laguna | ROCm | Did not reach server-ready state | Ready | 20.10 s |
+| Ling-3.0 | ROCm | Did not reach server-ready state | Ready | 14.93 s |
+
+The times use the prefetch-only result because H2D staging does not determine startup compatibility. ROCm decode performance was not preferable for either model, so their desktop shortcuts continue to use Vulkan.
+
 ## Change from previous release
 
 | Model | Backend | Current prefill | Previous-release prefill | Prefill delta | Current decode (4K) | Previous-release decode (4K) | Decode delta |
