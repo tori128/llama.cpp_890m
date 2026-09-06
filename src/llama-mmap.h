@@ -50,6 +50,7 @@ struct llama_mmap {
     void * addr() const;
 
     void unmap_fragment(size_t first, size_t last);
+    void release_range(size_t offset, size_t len);
 
     // opt-in, see llama_mmap_random_mode(). marks one byte range as randomly accessed, which is
     // only correct once loading is done: until then the loader streams the file sequentially.

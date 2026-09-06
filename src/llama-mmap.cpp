@@ -904,6 +904,31 @@ void * llama_mmap::addr() const { return pimpl->addr; }
 
 void llama_mmap::unmap_fragment(size_t first, size_t last) { pimpl->unmap_fragment(first, last); }
 
+void llama_mmap::release_range(size_t offset, size_t len) {
+#if defined(__linux__)
+    if (offset >= size() || len == 0) {
+        return;
+    }
+    const size_t page = llama_mmap_page_size();
+    const size_t first = offset + (page - offset % page) % page;
+    const size_t last = (offset + std::min(len, size() - offset)) / page * page;
+    if (first >= last) {
+        return;
+    }
+    // Keep partial pages shared with adjacent tensors. The file mapping stays valid.
+    if (madvise((char *) addr() + first, last - first, MADV_DONTNEED)) {
+        LLAMA_LOG_WARN("warning: release mmap pages failed: %s\n", strerror(errno));
+    }
+    const int error = posix_fadvise(pimpl->fd_advise, first, last - first, POSIX_FADV_DONTNEED);
+    if (error) {
+        LLAMA_LOG_WARN("warning: release file cache failed: %s\n", strerror(error));
+    }
+#else
+    GGML_UNUSED(offset);
+    GGML_UNUSED(len);
+#endif
+}
+
 void llama_mmap::advise_random_range(size_t offset, size_t len, bool drop) {
     pimpl->advise_random_range(offset, len, drop);
 }

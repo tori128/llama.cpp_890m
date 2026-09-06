@@ -4,6 +4,7 @@
 #include "llama-cpp.h"
 
 #include <clocale>
+#include <cstdio>
 #include <random>
 #include <vector>
 
@@ -173,12 +174,46 @@ static bool test_state_load(struct llama_model * model, const struct common_para
     llama_tokens unused_sts(tokens.size());
     size_t n_token_count_out = 0;
 
+    const std::string version_path = params.out_file + ".version-test";
+    for (bool sequence : {false, true}) {
+        const uint32_t current = sequence ? LLAMA_STATE_SEQ_VERSION : LLAMA_SESSION_VERSION;
+        for (uint32_t version : {current - 1, current + 1}) {
+            const uint32_t header[] = {sequence ? LLAMA_STATE_SEQ_MAGIC : LLAMA_SESSION_MAGIC, version};
+            FILE * file = std::fopen(version_path.c_str(), "wb");
+            GGML_ASSERT(file);
+            GGML_ASSERT(std::fwrite(header, sizeof(header), 1, file) == 1);
+            GGML_ASSERT(std::fclose(file) == 0);
+            const bool loaded = sequence ?
+                llama_state_seq_load_file(ctx.get(), version_path.c_str(), 0, unused_sts.data(), unused_sts.size(), &n_token_count_out) != 0 :
+                llama_state_load_file(ctx.get(), version_path.c_str(), unused_sts.data(), unused_sts.size(), &n_token_count_out);
+            GGML_ASSERT(std::remove(version_path.c_str()) == 0);
+            if (loaded) {
+                LOG_ERR("%s: accepted unsupported state version %u\n", __func__, version);
+                return false;
+            }
+        }
+    }
+
     if (!llama_state_load_file(ctx.get(), params.out_file.data(), unused_sts.data(), unused_sts.size(), &n_token_count_out)) {
         LOG_ERR("\n%s: failed to load state\n", __func__);
         return false;
     }
 
     LOG_TRC("%s: loaded state with %zu tokens\n", __func__, n_token_count_out);
+
+    const std::string sequence_path = params.out_file + ".sequence-test";
+    if (!llama_state_seq_save_file(ctx.get(), sequence_path.c_str(), 0, unused_sts.data(), n_token_count_out)) {
+        return false;
+    }
+    const size_t saved_tokens = n_token_count_out;
+    llama_memory_clear(llama_get_memory(ctx.get()), true);
+    const size_t loaded_bytes = llama_state_seq_load_file(
+        ctx.get(), sequence_path.c_str(), 0, unused_sts.data(), unused_sts.size(), &n_token_count_out);
+    GGML_ASSERT(std::remove(sequence_path.c_str()) == 0);
+    if (loaded_bytes == 0 || n_token_count_out != saved_tokens) {
+        LOG_ERR("%s: sequence file round trip failed\n", __func__);
+        return false;
+    }
 
     // Replay last token
     int n_past = (int) n_token_count_out - 1;

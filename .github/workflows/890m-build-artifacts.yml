@@ -41,7 +41,7 @@ jobs:
           python3 scripts/ci/public_release_audit.py --range "$range"
 
   linux-rocm:
-    name: Linux ROCm (gfx1151)
+    name: Linux ROCm (gfx1150, gfx1151)
     needs: public-audit
     runs-on: ubuntu-24.04
     container:
@@ -58,7 +58,7 @@ jobs:
           cmake -S . -B build-rocm -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_HIP=ON \
-            -DAMDGPU_TARGETS=gfx1151 \
+            '-DGPU_TARGETS=gfx1150;gfx1151' \
             -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang \
             -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
             -DLLAMA_BUILD_SERVER=ON \
@@ -70,12 +70,12 @@ jobs:
         run: |
           test -x build-rocm/bin/llama-server
           mkdir -p dist
-          printf 'commit: %s\nbuilt: %s\nplatform: Linux\nbackend: ROCm HIP\ntarget: gfx1151\nruntime: ROCm 7.2 or newer\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > build-rocm/bin/MANIFEST.txt
-          tar -C build-rocm/bin -czf dist/llama-unified-linux-rocm-gfx1151.tar.gz .
+          printf 'commit: %s\nbuilt: %s\nplatform: Linux\nbackend: ROCm HIP\ntargets: gfx1150, gfx1151\nruntime: ROCm 7.2 or newer\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > build-rocm/bin/MANIFEST.txt
+          tar -C build-rocm/bin -czf dist/llama-unified-linux-rocm-gfx1150-gfx1151.tar.gz .
           ( cd dist && sha256sum *.tar.gz > SHA256SUMS-linux-rocm.txt )
       - uses: actions/upload-artifact@v6
         with:
-          name: llama-unified-${{ github.sha }}-linux-rocm-gfx1151
+          name: llama-unified-${{ github.sha }}-linux-rocm-gfx1150-gfx1151
           path: dist/
           retention-days: 90
 
@@ -160,7 +160,7 @@ jobs:
           retention-days: 90
 
   windows-rocm:
-    name: Windows ROCm (gfx1151)
+    name: Windows ROCm (gfx1150, gfx1151)
     needs: public-audit
     runs-on: windows-2022
     env:
@@ -204,7 +204,7 @@ jobs:
             -DGGML_BACKEND_DL=ON `
             -DGGML_NATIVE=OFF `
             -DGGML_HIP=ON `
-            -DAMDGPU_TARGETS=gfx1151
+            "-DGPU_TARGETS=gfx1150;gfx1151"
           cmake --build build-rocm -j ${env:NUMBER_OF_PROCESSORS}
       - name: Package
         shell: pwsh
@@ -217,14 +217,14 @@ jobs:
           built: $(Get-Date -AsUTC -Format 'yyyy-MM-ddTHH:mm:ssZ')
           platform: Windows
           backend: ROCm HIP
-          target: gfx1151
+          targets: gfx1150, gfx1151
           runtime: ROCm 7.14 runtime
           "@.Trim() | Set-Content -Path "$bin/MANIFEST.txt"
-          Compress-Archive -Path "$bin/*" -DestinationPath dist/llama-unified-windows-rocm-gfx1151.zip
-          (Get-FileHash dist/llama-unified-windows-rocm-gfx1151.zip -Algorithm SHA256).Hash | Set-Content -NoNewline dist/SHA256SUMS-windows-rocm.txt
+          Compress-Archive -Path "$bin/*" -DestinationPath dist/llama-unified-windows-rocm-gfx1150-gfx1151.zip
+          (Get-FileHash dist/llama-unified-windows-rocm-gfx1150-gfx1151.zip -Algorithm SHA256).Hash | Set-Content -NoNewline dist/SHA256SUMS-windows-rocm.txt
       - uses: actions/upload-artifact@v6
         with:
-          name: llama-unified-${{ github.sha }}-windows-rocm-gfx1151
+          name: llama-unified-${{ github.sha }}-windows-rocm-gfx1150-gfx1151
           path: dist/
           retention-days: 90
 
@@ -271,9 +271,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f release-assets/llama-unified-linux-rocm-gfx1151.tar.gz
+          test -f release-assets/llama-unified-linux-rocm-gfx1150-gfx1151.tar.gz
           test -f release-assets/llama-unified-linux-vulkan.tar.gz
-          test -f release-assets/llama-unified-windows-rocm-gfx1151.zip
+          test -f release-assets/llama-unified-windows-rocm-gfx1150-gfx1151.zip
           test -f release-assets/llama-unified-windows-vulkan.zip
           test -f release-assets/SHA256SUMS-linux-rocm.txt
           test -f release-assets/SHA256SUMS-linux-vulkan.txt
@@ -292,9 +292,9 @@ jobs:
             release_title="$RELEASE_TAG"
           fi
           release_assets=(
-            release-assets/llama-unified-linux-rocm-gfx1151.tar.gz
+            release-assets/llama-unified-linux-rocm-gfx1150-gfx1151.tar.gz
             release-assets/llama-unified-linux-vulkan.tar.gz
-            release-assets/llama-unified-windows-rocm-gfx1151.zip
+            release-assets/llama-unified-windows-rocm-gfx1150-gfx1151.zip
             release-assets/llama-unified-windows-vulkan.zip
             release-assets/SHA256SUMS-linux-rocm.txt
             release-assets/SHA256SUMS-linux-vulkan.txt

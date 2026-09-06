@@ -2332,7 +2332,7 @@ struct llama_model_qwen4exp : public llama_model_base {
     }
 
     // Copy/dequantize selected PLE rows directly from the compact table.
-    void gather_ple_rows(const int32_t * rows, size_t n_rows, float * dst) const;
+    void gather_ple_rows(const int32_t * rows, size_t n_rows, float * dst, int n_threads) const;
 
     struct graph : public llm_build_delta_net_base {
         graph(const llama_model & model, const llm_graph_params & params);
