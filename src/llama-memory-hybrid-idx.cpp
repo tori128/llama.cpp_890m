@@ -103,8 +103,15 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
 
         std::fill(hparams_pool.n_head_kv_arr.begin(), hparams_pool.n_head_kv_arr.end(), 1);
         hparams_pool.n_embd_head_k_full = model.hparams.indexer_head_size;
+        // nothing reads this cache's V, for the same reason the indexer cache's V is dead: the
+        // graph writes pooled keys with set_rows and reads them back as a view, and never asks
+        // for a value side at all. Narrowing it to the key width still left indexer_head_size
+        // F32 elements per block per layer -- 384 MiB at ctx=262144 over 12 QSA layers. One
+        // element costs 4 bytes per block per layer instead.
         hparams_pool.n_embd_head_v_full = 1;
         hparams_pool.n_embd_head_v_swa  = 1;
+
+        // the rows are already rotated when they are written, so a K-shift must not touch them
         hparams_pool.rope_type = LLAMA_ROPE_TYPE_NONE;
 
         LLAMA_LOG_INFO("%s: creating QSA pooled-key cache, size = %u blocks (ratio %u)\n",
