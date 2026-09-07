@@ -75,6 +75,14 @@ public:
 
     llama_kv_cache * get_mem_idx() const;   // nullptr when the model carries no indexer
 
+    llama_kv_cache * get_mem_pool() const;
+
+    uint32_t qsa_pool_n_recomp(uint32_t ratio, uint32_t n_tokens, uint32_t n_kv, uint32_t n_pad_kv) const;
+
+    void qsa_pool_invalidate() const;
+    void qsa_pool_invalidate_from(llama_pos p0) const;
+    void qsa_pool_validate(uint32_t n_pos) const;
+
     // block-compressed sparse attention (qwen4exp QSA) over the cells of the indexer cache.
     // Blocks cut the position line, not the cell array, so no caller assumes a contiguous layout:
     //   cell_blk  I32 [n_kv, ns]           block each cell belongs to, null for block top-k
@@ -94,6 +102,9 @@ public:
             ggml_tensor * tail_mask,
             ggml_tensor * blk_pos,
             ggml_tensor * bias,
+            ggml_tensor * pool_idxs,
+            ggml_tensor * pool_cells,
+            ggml_tensor * pool_pos,
             int64_t n_kv,
             const llama_ubatch * ubatch,
             uint32_t ratio,
@@ -111,6 +122,12 @@ private:
     llama_hparams hparams_idx;
 
     const std::unique_ptr<llama_kv_cache> mem_idx;
+
+    llama_hparams hparams_pool;
+    const std::unique_ptr<llama_kv_cache> mem_pool;
+    mutable uint32_t pool_valid_pos = 0;
+
+    bool qsa_pool_one_seq() const;
 };
 
 class llama_memory_hybrid_idx_context : public llama_memory_hybrid_context {
@@ -155,6 +172,9 @@ public:
     // streams in the current slot info, the `ns` of get_k/get_v; 1 if unified
     uint32_t get_n_stream() const;
 
+    llama_kv_cache * get_mem_pool() const;
+    uint32_t qsa_pool_n_recomp(uint32_t ratio, uint32_t n_tokens, uint32_t n_kv, uint32_t n_pad_kv) const;
+
     void set_input_qsa(
             ggml_tensor * cell_blk,
             ggml_tensor * blk_cells,
@@ -163,6 +183,9 @@ public:
             ggml_tensor * tail_mask,
             ggml_tensor * blk_pos,
             ggml_tensor * bias,
+            ggml_tensor * pool_idxs,
+            ggml_tensor * pool_cells,
+            ggml_tensor * pool_pos,
             const llama_ubatch * ubatch,
             uint32_t ratio,
             bool blk_bias,
