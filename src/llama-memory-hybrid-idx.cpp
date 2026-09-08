@@ -82,11 +82,14 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
     }()),
     hparams_pool(model.hparams),
     mem_pool(filter_idx == nullptr ? nullptr : [&] () -> llama_kv_cache * {
+        // LLAMA_QSA_POOL_CACHE=0 disables the pooled-key cache: every QSA layer then recomputes
+        // every block inline, the pre-cache behaviour. An A/B and support switch, default on.
         if (const char * e = std::getenv("LLAMA_QSA_POOL_CACHE"); e != nullptr && e[0] == '0') {
             LLAMA_LOG_INFO("%s: QSA pooled-key cache disabled by LLAMA_QSA_POOL_CACHE=0\n", __func__);
             return nullptr;
         }
 
+        // the smallest compress ratio gives the most blocks, so size the cache for that
         uint32_t r_min = 0;
         for (uint32_t il = 0; il < model.hparams.n_layer(); ++il) {
             const uint32_t r = model.hparams.dsv4_compress_ratios[il];
