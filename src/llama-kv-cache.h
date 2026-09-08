@@ -114,8 +114,7 @@ public:
         const  layer_reuse_cb & reuse,
         const  layer_share_cb & share,
         // a model can hold more than one cache, so the tensor names have to stay unique
-                 const char *   name_tag = "",
-                         bool   key_only = false);
+                 const char *   name_tag = "");
 
     ~llama_kv_cache() = default;
 
@@ -169,14 +168,10 @@ public:
 
     const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
 
-    // state_read, plus the cells the restored tokens were placed in.
-    // a cache that mirrors another one cell for cell (the qwen4exp indexer) cannot search for
-    // its own cells here: a second independent search only happens to agree with the first.
-    //   sinfos_out: if set, resized to n_stream and filled with the layout used; a stream that
-    //               carried no cells leaves an empty entry
-    //   sinfos_in : if set, the layout to use instead of searching for one. it must have one
-    //               entry per stream and the entry must match the cell count in the blob,
-    //               otherwise the read fails as it would on any other corrupt input
+    // state_read, plus the cells the restored tokens were placed in
+    // a cache that mirrors another one (the qwen4exp indexer) must not search for its own cells: two searches agree only by luck
+    //   sinfos_out: if set, filled with the layout used; a stream with no cells leaves an empty entry
+    //   sinfos_in : if set, the layout to use instead of searching. one entry per stream, cell count must match the blob
     void state_read_sinfo(
             llama_io_read_i & io,
                llama_seq_id   seq_id,
@@ -241,7 +236,10 @@ public:
     bool has_cell_ext() const;
 
     // for every token of the ubatch, the ids of the n tokens that precede it in its sequence
-    // entries with no matching cell are set to LLAMA_TOKEN_NULL
+    // example for M-RoPE image case: tokens A B X X X C, where X is a 3-token image at pos 2 spanning positions 2..4:
+    //   tok: A B X X X C
+    //   pos: 0 1 2 2 2 5
+    //   prev, n=2: A -> [NULL, NULL], B -> [NULL, A], 3rd X -> [X, X], C -> [X, X]
     // note: used by n-gram input embeddings
     void get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const;
 

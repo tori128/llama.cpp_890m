@@ -30,6 +30,8 @@ bool llama_model_saver_supports_arch(llm_arch arch) {
         case LLM_ARCH_MUSE_GLIMMER:
         case LLM_ARCH_MELLUM:
         case LLM_ARCH_LAGUNA:
+        case LLM_ARCH_GRANITE_SWA:
+        case LLM_ARCH_DOTS3NOTE: // TODO: need to handle SWA pattern and MLA+SWA config
             return false;
         default:
             return true;
@@ -279,6 +281,7 @@ void llama_model_saver::add_kv_from_model() {
     add_kv(LLM_KV_ATTENTION_VALUE_RESIDUAL_MIX_LORA_RANK, hparams.n_lora_value_res_mix);
     add_kv(LLM_KV_ATTENTION_GATE_LORA_RANK,          hparams.n_lora_gate);
     add_kv(LLM_KV_ATTENTION_RELATIVE_BUCKETS_COUNT,  hparams.n_rel_attn_bkts);
+    add_kv(LLM_KV_ATTENTION_ROPE_PATTERN,            hparams.rope_pattern, true);
     add_kv(LLM_KV_ATTENTION_SLIDING_WINDOW,          hparams.n_swa);
     // add_kv(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN,  ???);
     add_kv(LLM_KV_ATTENTION_SCALE,                   hparams.f_attention_scale);
@@ -297,7 +300,6 @@ void llama_model_saver::add_kv_from_model() {
     add_kv(LLM_KV_ATTENTION_INDEXER_LOCAL_BLOCKS,    hparams.indexer_local_blocks);
     add_kv(LLM_KV_ATTENTION_INDEXER_TYPES,           hparams.is_indexer_full_impl, true);
     add_kv(LLM_KV_ATTENTION_RECURRENT_LAYERS,        hparams.is_recr_impl, true);
-    add_kv(LLM_KV_ATTENTION_NOISE_HEAD_COUNT,        hparams.motif_n_noise_heads);
     add_kv(LLM_KV_ATTENTION_OUTPUT_GROUP_COUNT,      hparams.dsv4_o_group_count);
     add_kv(LLM_KV_ATTENTION_OUTPUT_LORA_RANK,        hparams.dsv4_o_lora_rank);
     add_kv(LLM_KV_ATTENTION_COMPRESS_ROPE_FREQ_BASE, hparams.dsv4_compress_rope_base);
@@ -463,6 +465,8 @@ void llama_model_saver::add_tensors_from_model() {
     add_tensor(model->output_s);
     add_tensor(model->output_in_s);
     add_tensor(model->output_res_score);
+    add_tensor(model->nextn_proj_pre);
+    add_tensor(model->nextn_proj_post);
     add_tensor(model->cls);
     add_tensor(model->cls_b);
     add_tensor(model->cls_out);

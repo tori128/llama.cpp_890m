@@ -6,6 +6,7 @@
 #include "llama-context.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -79,8 +80,7 @@ llama_kv_cache::llama_kv_cache(
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse,
     const  layer_share_cb & share,
-             const char *   name_tag,
-                     bool   key_only) :
+             const char *   name_tag) :
     model(model), hparams(hparams), v_trans(v_trans),
     n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa), swa_type(swa_type),
     other(static_cast<llama_kv_cache *>(mem_other)),
@@ -156,12 +156,12 @@ llama_kv_cache::llama_kv_cache(
     }
 
     // [TAG_V_CACHE_VARIABLE]
-    const bool has_v = !key_only && !hparams.is_mla();
-
-    if (has_v && v_trans && hparams.is_n_embd_v_gqa_variable()) {
+    if (v_trans && hparams.is_n_embd_v_gqa_variable()) {
         LLAMA_LOG_WARN("%s: the V embeddings have different sizes across layers and FA is not enabled - padding V cache to %d\n",
                 __func__, hparams.n_embd_v_gqa_max());
     }
+
+    const bool is_mla = hparams.is_mla();
 
     for (uint32_t il = 0; il < n_layer; il++) {
         if (!hparams.has_kv(il)) {
@@ -181,9 +181,7 @@ llama_kv_cache::llama_kv_cache(
                 const auto & layer_share = other->layers[other->map_layer_ids[il_share]];
 
                 LLAMA_LOG_WARN("%s: layer %3d: sharing with layer %d. k = %p, v = %p\n", __func__, il, il_share,
-                        layer_share.k->data, layer_share.v ? layer_share.v->data : nullptr);
-
-                GGML_ASSERT((layer_share.v != nullptr) == has_v);
+                        layer_share.k->data, layer_share.v->data);
 
                 map_layer_ids[il] = layers.size();
 
@@ -200,7 +198,7 @@ llama_kv_cache::llama_kv_cache(
             n_embd_head_k_all = -1;
         }
 
-        if (has_v) {
+        if (!is_mla) {
             if (n_embd_head_v_all == 0) {
                 n_embd_head_v_all = (int32_t) hparams.n_embd_head_v(il);
             } else if (n_embd_head_v_all > 0 && n_embd_head_v_all != (int32_t) hparams.n_embd_head_v(il)) {
@@ -231,6 +229,7 @@ llama_kv_cache::llama_kv_cache(
         }
 
         const bool has_k = true;
+        const bool has_v = !is_mla;
 
         ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
         ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
@@ -327,7 +326,8 @@ llama_kv_cache::llama_kv_cache(
             hparams.n_embd_head_k() % 64 == 0;
 
         // always create Hadamard rotation tensors for DeepSeek lightning indexers
-        if ((model.arch == LLM_ARCH_DEEPSEEK32 || model.arch == LLM_ARCH_DEEPSEEK4 || model.arch == LLM_ARCH_GLM_DSA) &&
+        if ((model.arch == LLM_ARCH_DEEPSEEK32 || model.arch == LLM_ARCH_DEEPSEEK4 ||
+                model.arch == LLM_ARCH_GLM_DSA || model.arch == LLM_ARCH_DOTS3NOTE) &&
                 hparams.n_embd_head_k_full == hparams.indexer_head_size) {
             attn_rot_k = true;
         }
@@ -386,6 +386,7 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
         return true;
     }
 
+    // TODO: fix incosistent handling of `seq_id < 0` and `seq_id == -1` in the codebase [TAG_LLAMA_SEQ_ID_NEG]
     GGML_ASSERT(seq_id == -1 || (seq_id >= 0 && (size_t) seq_id < seq_to_stream.size()));
 
     if (p0 < 0) {
@@ -1141,8 +1142,8 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & 
                 if (ubatch.token) {
                     ext.tok = ubatch.token[i];
                 } else if (hparams.ple_n_heads > 0) {
-                    // an embd batch has already consumed the image placeholder; store what the
-                    // reference hashes in input_ids at these positions (EOS for old GGUF files)
+                    // embd batch (multimodal input) has no token ids, need to pad it with the correct ID for PLE layers
+                    // TODO @ngxson : check if we can do the same as gemma 3n / gemma 4
                     ext.tok = hparams.ple_image_token_id != 0
                         ? (llama_token) hparams.ple_image_token_id
                         : (llama_token) hparams.ple_eos_token_id;
@@ -1851,6 +1852,8 @@ void llama_kv_cache::get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, st
         seqs.set(ubatch.seq_id_unq[s]);
     }
 
+    const llama_pos w0 = p_min - (llama_pos) n;
+
     // (seq_id, pos) -> token, for every cell that could be a predecessor of a ubatch token
     std::unordered_map<uint64_t, llama_token> hist;
 
@@ -1858,11 +1861,46 @@ void llama_kv_cache::get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, st
         return ((uint64_t) seq_id << 32) | (uint32_t) pos;
     };
 
+    // handle M-RoPE gaps: multiple tokens share the same temporal pos
+    // TODO @ngxson : improve this in the future
+    std::array<std::pair<llama_pos, llama_token>, LLAMA_MAX_SEQ> below;
+    below.fill({ -1, LLAMA_TOKEN_NULL });
+
     for (uint32_t s = 0; s < n_stream; ++s) {
-        v_cells[s].for_each_token_in(seqs, p_min - (llama_pos) n, p_max,
+        // p_max inclusive: an embd token looks up cells at its own (shared) position
+        v_cells[s].for_each_token_in(seqs, 0, p_max + 1,
             [&](llama_seq_id seq_id, llama_pos pos, llama_token tok) {
-                hist[key(seq_id, pos)] = tok;
+                if (pos >= w0) {
+                    hist[key(seq_id, pos)] = tok;
+                } else if (pos > below[seq_id].first) {
+                    below[seq_id] = { pos, tok };
+                }
             });
+    }
+
+    // the token at pos p, or the nearest earlier one when p falls in an M-RoPE gap
+    const auto lookup = [&](llama_seq_id seq_id, llama_pos p) -> llama_token {
+        for (llama_pos q = p; q >= w0; --q) {
+            const auto it = hist.find(key(seq_id, q));
+            if (it != hist.end()) {
+                return it->second;
+            }
+        }
+        return below[seq_id].second;
+    };
+
+    // an embd (multimodal) ubatch can repeat one position for a whole image, so positions
+    // do not encode the token order; resolve its predecessors by ubatch order instead
+    std::vector<uint32_t> ord; // index among the ubatch tokens of the same seq
+    std::unordered_map<llama_seq_id, std::vector<uint32_t>> seq_idx;
+
+    if (!ubatch.token) {
+        ord.resize(n_tokens);
+        for (uint32_t i = 0; i < n_tokens; ++i) {
+            auto & v = seq_idx[ubatch.seq_id[i][0]];
+            ord[i] = v.size();
+            v.push_back(i);
+        }
     }
 
     for (uint32_t i = 0; i < n_tokens; ++i) {
@@ -1871,15 +1909,23 @@ void llama_kv_cache::get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, st
         const llama_seq_id seq_id = ubatch.seq_id[i][0];
 
         for (uint32_t j = 0; j < n; ++j) {
-            const llama_pos p = ubatch.pos[i] - (llama_pos) (n - j);
+            const llama_pos d = (llama_pos) (n - j);
+
+            llama_pos p;
+            if (!ubatch.token) {
+                const auto & v = seq_idx[seq_id];
+                const int64_t k = (int64_t) ord[i] - d;
+                // k >= 0: an earlier token of this very ubatch; k < 0: before the chunk
+                p = k >= 0 ? ubatch.pos[v[k]] : ubatch.pos[v[0]] + (llama_pos) k;
+            } else {
+                p = ubatch.pos[i] - d;
+            }
+
             if (p < 0) {
                 continue;
             }
 
-            const auto it = hist.find(key(seq_id, p));
-            if (it != hist.end()) {
-                res[i*n + j] = it->second;
-            }
+            res[i*n + j] = lookup(seq_id, p);
         }
     }
 }
@@ -1988,7 +2034,7 @@ void llm_graph_input_k_shift::set_input(const llama_ubatch * ubatch) {
         kv_self->set_input_k_shift(k_shift);
     }
 
-    if (k_rot) {
+    if (k_rot && k_rot->buffer) {
         kv_self->set_input_k_rot(k_rot);
     }
 }
@@ -2132,6 +2178,7 @@ const slot_info_vec_t *   sinfos_in) {
 
     GGML_UNUSED(flags);
 
+    // TODO: fix incosistent handling of `seq_id < 0` and `seq_id == -1` in the codebase [TAG_LLAMA_SEQ_ID_NEG]
     GGML_ASSERT(seq_id == -1 || (seq_id >= 0 && (size_t) seq_id < seq_to_stream.size()));
 
     if (sinfos_out) {
@@ -2148,9 +2195,8 @@ const slot_info_vec_t *   sinfos_in) {
         throw std::runtime_error("n_stream mismatch");
     }
 
-    // a whole-context restore replaces every stream, so the cache is emptied once here. clear()
-    // resets all streams at once, so doing this per stream below would throw away the streams
-    // already read and leave only the last one
+    // a whole-context restore replaces every stream, so the cache is emptied once here
+    // clear() resets all streams at once, so doing it per stream below would keep only the last one
     if (seq_id == -1) {
         clear(true);
     }
@@ -2341,6 +2387,12 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
 
         ubatch.seq_id_unq[0] = dest_seq_id;
 
+        // the ext as it was saved, to put back after apply_ubatch()
+        std::vector<llama_kv_cell_ext> exts;
+        if (has_cell_ext()) {
+            exts.resize(cell_count);
+        }
+
         for (uint32_t i = 0; i < cell_count; ++i) {
             llama_pos pos;
             uint32_t n_seq_id;
@@ -2364,6 +2416,8 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
 
                 // apply_ubatch() below restores ext.tok from the ubatch tokens
                 ubatch.token[i] = ext.tok;
+
+                exts[i] = ext;
             }
 
             // read the sequence id, but directly discard it - we will use dest_seq_id instead
@@ -2378,8 +2432,7 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
         }
 
         if (sinfo_in) {
-            // this cache mirrors another one, so it takes that cache's restored layout rather
-            // than searching for cells of its own
+            // this cache mirrors another one, so it takes that cache's layout instead of searching for its own cells
             if (sinfo_in->empty() || sinfo_in->n_stream() != 1 || sinfo_in->idxs[0].size() != cell_count) {
                 LLAMA_LOG_ERROR("%s: mirrored slot layout holds %d cells, this cache restores %d\n", __func__,
                         sinfo_in->empty() ? 0 : (int) sinfo_in->idxs[0].size(), cell_count);
@@ -2388,14 +2441,13 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
 
             sinfo = *sinfo_in;
 
-            // the layout is addressed by cell index, so it only means the same thing in both
-            // caches while their streams line up
+            // the layout is cell indices, so it means the same in both caches only while their streams line up
             sinfo.s0 = strm;
             sinfo.s1 = strm;
             sinfo.strm[0] = strm;
 
-            // seq_rm above freed exactly the cells this sequence held. anything else in the way
-            // is a cache that had already drifted, which this restore must not paper over
+            // seq_rm above freed exactly the cells this sequence held
+            // anything else in the way is a cache that had already drifted, which this restore must not hide
             for (uint32_t i = 0; i < cell_count; ++i) {
                 const uint32_t idx = sinfo.idxs[0][i];
 
@@ -2417,6 +2469,14 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
         //       see: https://github.com/ggml-org/llama.cpp/pull/16825#issuecomment-3460868350
         apply_ubatch(sinfo, ubatch);
 
+        // apply_ubatch() takes the 2D position from the ubatch, and that ubatch is built with this
+        // cache's own n_pos_per_embd. a cache that does not use M-RoPE itself but mirrors one that
+        // does (the qwen4exp QSA indexer) would drop x and y. put the saved ext back instead, which
+        // is what the whole-context path below already does.
+        for (uint32_t i = 0; i < (uint32_t) exts.size(); ++i) {
+            cells.ext_set(sinfo.idxs[0][i], exts[i]);
+        }
+
         LLAMA_LOG_DEBUG("%s: cell_count = %d, dest_seq_id = %d\n", __func__, cell_count, dest_seq_id);
 
         // DEBUG CHECK: verify that all cells were allocated and have correct seq_id and pos values
@@ -2435,8 +2495,7 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
             return false;
         }
 
-        // the cells go in from 0, so a mirrored cache lands on the same ones as long as it
-        // restores the same count. the layout itself carries no more information here
+        // the cells go in from 0, so a mirrored cache lands on the same ones as long as it restores the same count. the layout itself carries no more information here
         if (sinfo_in && (sinfo_in->empty() || sinfo_in->n_stream() != 1 || sinfo_in->idxs[0].size() != cell_count)) {
             LLAMA_LOG_ERROR("%s: mirrored slot layout holds %d cells, this cache restores %d\n", __func__,
                     sinfo_in->empty() ? 0 : (int) sinfo_in->idxs[0].size(), cell_count);
@@ -2490,6 +2549,24 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
 bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, const slot_info & sinfo) {
     auto & cells = v_cells[strm];
 
+    // batch the scatter reads per contiguous run of destination indices
+    // from inclusive, to exclusive - same convention as cell_ranges_t
+    // contiguous cells yield a single run covering the whole block
+    struct cell_run { uint32_t from; uint32_t to; };
+    std::vector<cell_run> runs;
+    if (cell_count > 0) {
+        const auto & idxs = sinfo.idxs[0];
+        uint32_t i0 = 0;
+        while (i0 < cell_count) {
+            uint32_t i1 = i0 + 1;
+            while (i1 < cell_count && idxs[i1] == idxs[i1 - 1] + 1) {
+                ++i1;
+            }
+            runs.push_back({idxs[i0], idxs[i1 - 1] + 1});
+            i0 = i1;
+        }
+    }
+
     uint32_t v_trans;
     uint32_t n_layer;
 
@@ -2537,17 +2614,8 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
             return false;
         }
 
-        if (cell_count) {
-            if (sinfo.is_contiguous()) {
-                // Fast path: contiguous cells, single memcpy
-                io.read_tensor(k, sinfo.head() * k_size_row, cell_count * k_size_row);
-            } else {
-                // Slow path: scatter to non-contiguous positions
-                for (uint32_t i = 0; i < cell_count; ++i) {
-                    const size_t dst_offset = sinfo.idxs[0][i] * k_size_row;
-                    io.read_tensor(k, dst_offset, k_size_row);
-                }
-            }
+        for (const auto & r : runs) {
+            io.read_tensor(k, (size_t) r.from * k_size_row, (size_t) (r.to - r.from) * k_size_row);
         }
     }
 
@@ -2580,17 +2648,8 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
                 return false;
             }
 
-            if (cell_count) {
-                if (sinfo.is_contiguous()) {
-                    // Fast path: contiguous cells, single memcpy
-                    io.read_tensor(v, sinfo.head() * v_size_row, cell_count * v_size_row);
-                } else {
-                    // Slow path: scatter to non-contiguous positions
-                    for (uint32_t i = 0; i < cell_count; ++i) {
-                        const size_t dst_offset = sinfo.idxs[0][i] * v_size_row;
-                        io.read_tensor(v, dst_offset, v_size_row);
-                    }
-                }
+            for (const auto & r : runs) {
+                io.read_tensor(v, (size_t) r.from * v_size_row, (size_t) (r.to - r.from) * v_size_row);
             }
         }
     } else {
@@ -2631,22 +2690,10 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
                 return false;
             }
 
-            if (cell_count) {
-                if (sinfo.is_contiguous()) {
-                    // Fast path: contiguous cells
-                    const uint32_t h = sinfo.head();
-                    for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
-                        const size_t dst_offset = (h + j * cells.size()) * v_size_el;
-                        io.read_tensor(v, dst_offset, cell_count * v_size_el);
-                    }
-                } else {
-                    // Slow path: scatter to non-contiguous positions
-                    for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
-                        for (uint32_t i = 0; i < cell_count; ++i) {
-                            const size_t dst_offset = (sinfo.idxs[0][i] + j * cells.size()) * v_size_el;
-                            io.read_tensor(v, dst_offset, v_size_el);
-                        }
-                    }
+            for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
+                for (const auto & r : runs) {
+                    const size_t dst_offset = ((size_t) r.from + j * cells.size()) * v_size_el;
+                    io.read_tensor(v, dst_offset, (size_t) (r.to - r.from) * v_size_el);
                 }
             }
         }

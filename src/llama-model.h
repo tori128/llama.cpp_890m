@@ -141,6 +141,7 @@ enum llm_type {
     LLM_TYPE_230B_A10B, // Minimax M2
     LLM_TYPE_428B_A23B, // Minimax M3
     LLM_TYPE_235B_A22B,
+    LLM_TYPE_288B_A19B, // dots3-note
     LLM_TYPE_300B_A47B, // Ernie MoE big
     LLM_TYPE_310B_A15B, // /MiMo-V2-Flash
     LLM_TYPE_314B_A13B, // Motif-3
@@ -698,6 +699,7 @@ struct llama_model {
     // dspark
     struct ggml_tensor * dspark_markov_w1   = nullptr;
     struct ggml_tensor * dspark_markov_w2   = nullptr;
+    struct ggml_tensor * dspark_markov_w2_s = nullptr;
     struct ggml_tensor * dspark_conf_proj   = nullptr;
     struct ggml_tensor * dspark_conf_proj_b = nullptr;
 
@@ -769,22 +771,6 @@ struct llama_model {
 
     const struct ggml_tensor * get_tensor(const char * name) const;
 
-    // ask the kernel to start reading the rows a gather is about to take out of a host-mapped
-    // tensor, so the faults overlap instead of serializing one NVMe latency at a time.
-    //
-    // does nothing unless the tensor was nominated by gather_tables() and really is read out of
-    // a mapping. off, and for anything else (offloaded tensors, --load-mode none, non-POSIX
-    // hosts), this is one empty-vector test.
-    void prefetch_rows(const struct ggml_tensor * t, const int32_t * rows, size_t n_rows) const;
-
-    // tensors that stay host-resident and are read by sparse row gathers rather than streamed
-    // once. under LLAMA_MMAP_RANDOM these get the random-access advice and the batched readahead
-    // of prefetch_rows(); every other tensor keeps the loader's sequential behaviour.
-    //
-    // nominated by the model, not guessed from size: a big host-resident tensor read in full,
-    // such as token_embd on a CPU-only run, wants the readahead this takes away.
-    virtual std::vector<const struct ggml_tensor *> gather_tables() const { return {}; }
-
     float get_rope_freq_base (const llama_cparams & cparams, int il) const;
     float get_rope_freq_scale(const llama_cparams & cparams, int il) const;
 
@@ -828,6 +814,7 @@ struct llama_model_base : public llama_model {
     const int TENSOR_SKIP;
     const int TENSOR_SKIP_IF_VIRTUAL;
     const int TENSOR_ALLOW_RESHAPE;
+    const int TENSOR_READ_LAZY;
 
     explicit llama_model_base(const llama_model_params & params);
     virtual ~llama_model_base() = default;

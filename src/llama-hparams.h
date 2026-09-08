@@ -104,6 +104,11 @@ struct llama_hparams {
     uint32_t n_group_used       = 0;
     uint32_t n_group_experts    = 0;
 
+    // MLA + SWA (i.e. dots3note)
+    uint32_t n_lora_kv_swa           = 0;
+    uint32_t n_embd_head_k_mla_swa   = 0;
+    uint32_t n_embd_head_v_mla_swa   = 0;
+
     float    expert_group_scale   = 0.05f;
     float    expert_weights_scale = 0.0f;
     bool     expert_weights_norm  = false;
@@ -146,6 +151,10 @@ struct llama_hparams {
     float    yarn_beta_slow   =  1.0f;
 
     std::array<int, 4> rope_sections;
+
+    // Per-layer RoPE enable flags (1 = use RoPE, 0 = NoPE)
+    // by default, all layers use RoPE (controlled by rope_finetuned)
+    std::array<uint32_t, LLAMA_MAX_LAYERS> rope_pattern;
 
     // Sliding Window Attention (SWA)
     llama_swa_type swa_type = LLAMA_SWA_TYPE_NONE;
@@ -264,22 +273,22 @@ struct llama_hparams {
     uint32_t dsv4_o_group_count        = 0;
     uint32_t dsv4_o_lora_rank          = 0;
     // Motif-3
-    uint32_t motif_n_noise_heads    = 0;
-    float    motif_mscale           = 1.0f;
-    float    motif_poly_eps         = 1e-6f;
-    float    motif_poly_out_scale   = 1.0f;
-    float    motif_poly_bias_clamp  = 0.0f;
+    uint32_t motif_n_noise_heads     = 0;
+    float    motif_mscale            = 1.0f;
+    float    motif_poly_eps          = 1e-6f;
+    float    motif_poly_out_scale    = 1.0f;
+    float    motif_poly_bias_clamp   = 0.0f;
     float    motif_poly_hidden_clamp = 0.0f;
-    bool     motif_poly_sigmoid_w   = true;
-    uint32_t motif_mhc_mult         = 0;
-    uint32_t motif_mhc_iters        = 20;
-    float    motif_mhc_post_coeff   = 1.0f;
+    bool     motif_poly_sigmoid_w    = true;
+    uint32_t motif_mhc_mult          = 0;
+    uint32_t motif_mhc_iters         = 20;
+    float    motif_mhc_post_coeff    = 1.0f;
 
-    // Motif-3 GDLA, MLA latent KV cache on the full-attention layers.
+    // Motif-3 GDLA, MLA latent KV cache on full-attention layers.
     bool     motif_mla_kv        = false;
-    uint32_t motif_n_embd_head_k = 0; // true per-head K dim (qk_nope + qk_rope)
-    uint32_t motif_n_embd_head_v = 0; // true per-head V dim
-    uint32_t motif_n_head_kv     = 0; // true GQA KV head count of the GDLA projections
+    uint32_t motif_n_embd_head_k = 0;
+    uint32_t motif_n_embd_head_v = 0;
+    uint32_t motif_n_head_kv     = 0;
 
     uint32_t dsv4_hc_mult              = 0;
     uint32_t dsv4_hc_sinkhorn_iters    = 0;
@@ -299,14 +308,11 @@ struct llama_hparams {
     uint32_t ple_eos_token_id    = 0;
     // the id the PLE hash stands in at image positions; 0 makes the loader fall back to EOS
     uint32_t ple_image_token_id  = 0;
-    // unlike is_swa_impl and friends this is never read or written as a per-layer gguf array
-    // (the file lists PLE layer indices), so it is not tied to the loader's uint32 array type
-    // and can hold one bit per layer instead of one word
+    // the file lists PLE layer indices, so this is never a per-layer gguf array and can hold one bit per layer
     std::bitset<LLAMA_MAX_LAYERS> is_ple_impl;
     // the hash multipliers reach ~2e13 and have to stay 64-bit
     std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>  ple_layer_multipliers;
-    // head offsets and vocab sizes are token-space indices; the gather that consumes them
-    // truncates to int32, so 64-bit storage could never have been used
+    // head offsets and vocab sizes are token-space indices; the gather truncates them to int32 anyway
     std::array<uint32_t, LLAMA_MAX_PLE_HEADS>  ple_head_offsets;
     std::array<uint32_t, LLAMA_MAX_PLE_HEADS>  ple_head_vocab_sizes;
 

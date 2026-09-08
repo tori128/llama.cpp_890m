@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Iterable
+from typing import Iterable, cast
 
 import torch
 from torch import Tensor
@@ -15,7 +14,7 @@ from .qwen3vl import Qwen3VLVisionModel
 
 
 @ModelBase.register("Qwen4ExpForConditionalGeneration", "Qwen4ExpForCausalLM")
-@ModelBase.example("unsloth/Qwen3.8-Flash-Next")
+@ModelBase.example("Qwen/Qwen3.8-Flash-Next")
 class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
     """Qwen3.8-Flash-Next.
 
@@ -32,13 +31,9 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # shards held only until the row stride is known, normally none
-        self._ple_pending: dict[int, Tensor] = {}
-        self._ple_shard_rows: dict[int, int] = {}
+        # only the shard names, so the table itself is never held
+        self._ple_shards: dict[int, str] = {}
         self._ple_row_dim: int | None = None
-        self._ple_rows_per_shard: int | None = None
-        self._ple_map: np.memmap | None = None
-        self._ple_path: Path | None = None
 
     def _read_hash_constants(self, suffix: str) -> list[int]:
         """Read an int64 PLE constant straight from the checkpoint.
@@ -54,29 +49,6 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
                     t = t.to(torch.int64)
                 return [int(x) for x in t.tolist()]
         raise ValueError(f"PLE constant {suffix!r} missing from the checkpoint")
-
-    def tensor_force_quant(self, name: str, new_name: str, bid: int | None, n_dims: int):
-        # the PLE table is far too large to quantize in python (whole-array numpy
-        # intermediates); keep it F16 here and let llama-quantize handle it, which
-        # the upstream PR taught to size its work buffer exactly for this tensor
-        if new_name.startswith(gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.PER_LAYER_TOKEN_EMBD]):
-            return gguf.GGMLQuantizationType.F16
-        return super().tensor_force_quant(name, new_name, bid, n_dims)
-
-    def _ple_fp8_scale(self) -> float:
-        """Per-tensor scale for an FP8-quantized PLE table (FP8 checkpoints only).
-
-        The FP8 repo stores the shards as F8_E4M3 with ONE scalar
-        `ngram_embedding.weight_scale` at the fused name, which pairs with no
-        `.weight` and so is untouched by the generic dequant. 1.0 for bf16 repos.
-        """
-        if getattr(self, "_ple_scale_cached", None) is None:
-            self._ple_scale_cached = 1.0
-            for name, gen in self.model_tensors.items():
-                if name.endswith("ngram_embedding.weight_scale"):
-                    self._ple_scale_cached = float(gen().to(torch.float32).item())
-                    break
-        return self._ple_scale_cached
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
@@ -121,7 +93,6 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
             self._read_hash_constants("ple_embedding.ngram_heads_vocab_sizes"))
 
     def _image_token_id(self) -> int | None:
-        # base.py merges text_config into the root of hparams, where image_token_id already is
         img = self.hparams.get("image_token_id")
         return None if img is None else int(img)
 
@@ -146,9 +117,6 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
             self._ple_head_vocab_sizes = [int(x) for x in data_torch.tolist()]
             return []
 
-        if name.endswith("ngram_embedding.weight_scale"):
-            return []  # scalar FP8 table scale; consumed lazily in _write_ple_shard
-
         if ".ngram_embedding.shard_" in name:
             return self._place_ple_shard(data_torch, name)
 
@@ -172,123 +140,56 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
 
         return super().modify_tensors(data_torch, name, bid)
 
-    # -- the PLE table ----------------------------------------------------
-    #
-    # The 128 shards concatenate into one enormous tensor, which peaks near 300 GB of RSS.
-    # Each shard is written straight into a memory-mapped file at its final row offset and
-    # then dropped, so only one shard is resident. The file is removed after the write.
-    # It holds float32 because base.py has already cast the shards to it.
-
+    # the shards concatenate into a tensor of well over 100 GB
+    # use LazyChunkedTensor here, a single shard resident at a time
     def _place_ple_shard(self, data_torch: Tensor, name: str) -> Iterable[tuple[str, Tensor]]:
 
         idx = int(name.rpartition(".shard_")[2].partition(".")[0])
         n_parts = self.hparams["split_ngram_parts"]
-        rows, row_dim = int(data_torch.shape[0]), int(data_torch.shape[-1])
 
-        self._ple_row_dim = row_dim
-        self._ple_shard_rows[idx] = rows
+        self._ple_shards[idx] = name
+        self._ple_row_dim = int(data_torch.shape[-1])
 
-        if self._ple_map is None:
-            if idx == n_parts - 1 and n_parts > 1:
-                # the last shard can be short, so it cannot set the stride
-                # this happens only if the checkpoint yields the shards out of order
-                self._ple_pending[idx] = data_torch
-                return []
-            self._ple_rows_per_shard = rows
-            self._ple_path = self.fname_out.parent / f".{self.fname_out.stem}.ple.tmp"
-            self._ple_map = np.memmap(
-                self._ple_path, dtype=np.float16, mode="w+",
-                shape=(n_parts * rows, row_dim))
-
-        for i, held in list(self._ple_pending.items()):
-            self._ple_pending.pop(i)
-            self._write_ple_shard(i, held)
-        self._write_ple_shard(idx, data_torch)
-
-        if len(self._ple_shard_rows) < n_parts:
+        if len(self._ple_shards) < n_parts:
             return []
 
-        total = sum(self._ple_shard_rows.values())
-        table = self._finish_ple_table(total)
+        # the checkpoint may yield the shards in any order, the row order is by index
+        shards = [self._ple_shards[i] for i in sorted(self._ple_shards)]
+        rows = 0
+        for shard in shards:
+            shape = self.model_tensors[shard]().shape
+            if int(shape[-1]) != self._ple_row_dim:
+                raise ValueError(
+                    f"PLE shard {shard} has row dim {int(shape[-1])}, expected {self._ple_row_dim}")
+            rows += int(shape[0])
 
+        table = gguf.LazyChunkedTensor(
+            [self._load_ple_shard(shard) for shard in shards],
+            shape=(rows, self._ple_row_dim),
+            dtype=np.float32,
+        )
         gguf_name = gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.PER_LAYER_TOKEN_EMBD]
-        return [(gguf_name + ".weight", table)]
+        return [(gguf_name + ".weight", cast(Tensor, table))]
 
-    def _write_ple_shard(self, idx: int, shard: Tensor) -> None:
-        # the caller opens the map and fixes the stride before the first write
-        assert self._ple_map is not None and self._ple_rows_per_shard is not None
+    def _load_ple_shard(self, name: str):
+        def load() -> np.ndarray:
+            from .base import LazyTorchTensor
 
-        rows = int(shard.shape[0])
-        if idx != self.hparams["split_ngram_parts"] - 1 and rows != self._ple_rows_per_shard:
-            raise ValueError(
-                f"PLE shard {idx} has {rows} rows, expected {self._ple_rows_per_shard}; "
-                "shards other than the last must be uniform for direct placement"
-            )
-
-        start = idx * self._ple_rows_per_shard
-        # the shard is still lazy here; force it, so exactly one shard is resident
-        from .base import LazyTorchTensor
-
-        # NB base.py upcasts F8_E4M3 shards to f32 BEFORE modify_tensors sees them,
-        # so the dtype is gone by now - gate on the checkpoint scale instead
-        # (_ple_fp8_scale() is 1.0 for bf16 checkpoints, where no weight_scale exists)
-        eager = LazyTorchTensor.to_eager(shard).to(torch.float32)
-        scale = self._ple_fp8_scale()
-        if scale != 1.0:
-            eager = eager * scale
-        eager = eager.contiguous()
-        self._ple_map[start:start + rows] = eager.numpy()
-        del eager
-
-    def _finish_ple_table(self, total_rows: int):
-        # only reached once every shard has been written, so the map is open
-        assert self._ple_map is not None and self._ple_path is not None
-        assert self._ple_row_dim is not None
-
-        self._ple_map.flush()
-        del self._ple_map
-        self._ple_map = None
-
-        # trim the tail if the last shard came up short of a full stride
-        want = total_rows * self._ple_row_dim * 2
-        if self._ple_path.stat().st_size != want:
-            with open(self._ple_path, "r+b") as f:
-                f.truncate(want)
-
-        raw = np.memmap(self._ple_path, dtype=np.float16, mode="r",
-                        shape=(total_rows, self._ple_row_dim))
-        arr = np.asarray(raw)
-        # the staging file is ~102 GB and the output write needs the space back the
-        # moment this tensor is flushed, not at the end of write(): unlink when the
-        # writer drops its last reference. write()'s finally covers a crash before then.
-        import weakref
-        weakref.finalize(arr.base if arr.base is not None else arr, self._unlink_ple_tmp, str(self._ple_path))
-        return torch.from_numpy(arr)
-
-    @staticmethod
-    def _unlink_ple_tmp(path: str) -> None:
-        import os
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
+            # a fresh lazy tensor every call, or to_eager() memoizes every shard
+            eager = LazyTorchTensor.to_eager(self.model_tensors[name]())
+            return eager.to(torch.float32).contiguous().numpy()
+        return load
 
     def prepare_tensors(self):
         super().prepare_tensors()
-        if self._ple_pending:
+        n_parts = self.hparams.get("split_ngram_parts", 0)
+        if self._ple_shards and len(self._ple_shards) != n_parts:
             raise ValueError(
-                f"unprocessed PLE embedding shards: {sorted(self._ple_pending)}"
+                f"got {len(self._ple_shards)} PLE embedding shards, expected {n_parts}"
             )
-
-    def write(self):
-        try:
-            super().write()
-        finally:
-            if self._ple_path is not None and self._ple_path.exists():
-                self._ple_path.unlink()
 
 
 @ModelBase.register("Qwen4ExpForConditionalGeneration")
-@ModelBase.example("unsloth/Qwen3.8-Flash-Next")
+@ModelBase.example("Qwen/Qwen3.8-Flash-Next")
 class Qwen4ExpVisionModel(Qwen3VLVisionModel):
     """The vision tower is an unmodified Qwen3-VL ViT."""

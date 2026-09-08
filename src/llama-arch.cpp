@@ -103,6 +103,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_GRANITE_MOE,      "granitemoe"       },
     { LLM_ARCH_GRANITE_HYBRID,   "granitehybrid"    },
     { LLM_ARCH_GRANITE_SWITCH,   "graniteswitch"    },
+    { LLM_ARCH_GRANITE_SWA,      "granite_swa"      },
     { LLM_ARCH_CHAMELEON,        "chameleon"        },
     { LLM_ARCH_WAVTOKENIZER_DEC, "wavtokenizer-dec" },
     { LLM_ARCH_PLM,              "plm"              },
@@ -110,6 +111,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_BAILINGMOE2,      "bailingmoe2"      },
     { LLM_ARCH_BAILINGMOE3,      "bailingmoe3"      },
     { LLM_ARCH_DOTS1,            "dots1"            },
+    { LLM_ARCH_DOTS3NOTE,        "dots3note"        },
     { LLM_ARCH_ARCEE,            "arcee"            },
     { LLM_ARCH_AFMOE,            "afmoe"            },
     { LLM_ARCH_LAGUNA,           "laguna"           },
@@ -263,6 +265,8 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_ATTENTION_RELATIVE_BUCKETS_COUNT,       "%s.attention.relative_buckets_count"       },
     { LLM_KV_ATTENTION_SLIDING_WINDOW,               "%s.attention.sliding_window"               },
     { LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN,       "%s.attention.sliding_window_pattern"       },
+    { LLM_KV_ATTENTION_ROPE_PATTERN,                 "%s.attention.rope_pattern"                 },
+
     { LLM_KV_ATTENTION_SCALE,                        "%s.attention.scale"                        },
     { LLM_KV_ATTENTION_OUTPUT_SCALE,                 "%s.attention.output_scale"                 },
     { LLM_KV_ATTENTION_VALUE_SCALE,                  "%s.attention.value_scale"                  },
@@ -272,6 +276,9 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_ATTENTION_VALUE_LENGTH_MLA,             "%s.attention.value_length_mla"             },
     { LLM_KV_ATTENTION_KEY_LENGTH_SWA,               "%s.attention.key_length_swa"               },
     { LLM_KV_ATTENTION_VALUE_LENGTH_SWA,             "%s.attention.value_length_swa"             },
+    { LLM_KV_ATTENTION_KEY_LENGTH_MLA_SWA,           "%s.attention.key_length_mla_swa"           },
+    { LLM_KV_ATTENTION_VALUE_LENGTH_MLA_SWA,         "%s.attention.value_length_mla_swa"         },
+    { LLM_KV_ATTENTION_KV_LORA_RANK_SWA,             "%s.attention.kv_lora_rank_swa"             },
     { LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,           "%s.attention.indexer.head_count"           },
     { LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,           "%s.attention.indexer.key_length"           },
     { LLM_KV_ATTENTION_INDEXER_TOP_K,                "%s.attention.indexer.top_k"                },
@@ -355,14 +362,14 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
 
     { LLM_KV_TARGET_LAYERS,         "%s.target_layers"        },
     { LLM_KV_TARGET_HIDDEN_SIZE,    "%s.target_hidden_size"   },
-    { LLM_KV_DECODER_ARCH,          "%s.decoder_arch"         },
-    { LLM_KV_DFLASH_BLOCK_SIZE,       "%s.block_size"           },
-    { LLM_KV_DFLASH_CONV_KERNEL_SIZE, "%s.conv_kernel_size"    },
-    { LLM_KV_DFLASH_CONV_GROUP_SIZE,  "%s.conv_group_size"     },
-    { LLM_KV_DFLASH_SELECTOR_RANK,    "%s.selector_rank"       },
-    { LLM_KV_DFLASH_SELECTOR_TOP_K,   "%s.selector_top_k"      },
     { LLM_KV_NORM_BEFORE_RESIDUAL,  "%s.norm_before_residual" },
     { LLM_KV_NORM_BEFORE_FC,        "%s.norm_before_fc"       },
+
+    { LLM_KV_DFLASH_BLOCK_SIZE,       "%s.block_size"       },
+    { LLM_KV_DFLASH_CONV_KERNEL_SIZE, "%s.conv_kernel_size" },
+    { LLM_KV_DFLASH_CONV_GROUP_SIZE,  "%s.conv_group_size"  },
+    { LLM_KV_DFLASH_SELECTOR_RANK,    "%s.selector_rank"    },
+    { LLM_KV_DFLASH_SELECTOR_TOP_K,   "%s.selector_top_k"   },
 
     { LLM_KV_SHORTCONV_L_CACHE, "%s.shortconv.l_cache" },
     // sentence-transformers dense modules feature dims
@@ -474,7 +481,6 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_CLS_OUT,                                "cls.output" },
     { LLM_TENSOR_CLS_NORM,                               "cls.norm" },
     { LLM_TENSOR_ENC_OUTPUT_NORM,                        "enc.output_norm" },
-    { LLM_TENSOR_ENC_AUX_NORM,                           "enc.aux_norm" },
     { LLM_TENSOR_FFN_GATE_INP_SHEXP,                     "blk.%d.ffn_gate_inp_shexp" },
     { LLM_TENSOR_SSM_A_NOSCAN,                           "blk.%d.ssm_a" },
     { LLM_TENSOR_SSM_CONV1D,                             "blk.%d.ssm_conv1d" },
@@ -737,7 +743,6 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_OUTPUT_NORM_LFM2,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
     {LLM_TENSOR_DEC_OUTPUT_NORM,            {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
     {LLM_TENSOR_ENC_OUTPUT_NORM,            {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
-    {LLM_TENSOR_ENC_AUX_NORM,               {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
     {LLM_TENSOR_ROPE_FREQS,                 {LLM_TENSOR_LAYER_REPEATING, GGML_OP_ROPE}},
     {LLM_TENSOR_ROPE_FACTORS_LONG,          {LLM_TENSOR_LAYER_REPEATING, GGML_OP_ROPE}},
     {LLM_TENSOR_ROPE_FACTORS_SHORT,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_ROPE}},
@@ -1132,9 +1137,12 @@ bool llm_arch_supports_rs_rollback(const llm_arch & arch) {
     switch (arch) {
         case LLM_ARCH_QWEN35:
         case LLM_ARCH_QWEN35MOE:
+        case LLM_ARCH_QWEN4EXP:
         case LLM_ARCH_DEEPSEEK4:
         case LLM_ARCH_NEMOTRON_H:
         case LLM_ARCH_NEMOTRON_H_MOE:
+        case LLM_ARCH_LFM2:
+        case LLM_ARCH_LFM2MOE:
         case LLM_ARCH_BAILINGMOE3:
             return true;
         default:
@@ -1157,15 +1165,13 @@ bool llm_arch_supports_sm_tensor(const llm_arch & arch) {
         case LLM_ARCH_OLMOE:
         case LLM_ARCH_DEEPSEEK2:
         case LLM_ARCH_DEEPSEEK32:
-        case LLM_ARCH_DEEPSEEK4:
+        case LLM_ARCH_DOTS3NOTE:
         case LLM_ARCH_GLM_DSA:
         case LLM_ARCH_BITNET:
         case LLM_ARCH_T5:
         case LLM_ARCH_NEMOTRON_H:
         case LLM_ARCH_NEMOTRON_H_MOE:
         case LLM_ARCH_GRANITE_HYBRID:
-        case LLM_ARCH_LFM2:
-        case LLM_ARCH_LFM2MOE:
         case LLM_ARCH_MINIMAX_01:
         case LLM_ARCH_MINIMAX_M2:
         case LLM_ARCH_MINIMAX_M3:
@@ -1174,6 +1180,7 @@ bool llm_arch_supports_sm_tensor(const llm_arch & arch) {
         case LLM_ARCH_BAILINGMOE3:
         case LLM_ARCH_KIMI_K3:
         case LLM_ARCH_QWEN3TTS:
+        case LLM_ARCH_QWEN4EXP:   // TODO: fix test-llama-archs
             return false;
         default:
             return true;
