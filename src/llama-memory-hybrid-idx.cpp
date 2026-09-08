@@ -392,11 +392,18 @@ uint32_t llama_memory_hybrid_idx::qsa_pool_n_recomp(
         return n_blocks;
     }
 
+    // more than one sequence in the stream: recompute every block (the inline behaviour,
+    // just routed through the cache) and forget whatever the cache held. The graph asks
+    // this again in can_reuse, so it is rebuilt when a second slot becomes active and
+    // again when the stream is back to one sequence.
     if (!qsa_pool_one_seq()) {
         pool_valid_pos = 0;
         return n_blocks;
     }
 
+    // whatever sits above the watermark has to be rebuilt, and so does the tail this ubatch
+    // can reach: the blocks its own tokens land in, plus the blocks n_kv gains when it next
+    // grows by a padding step. Below both, nothing has moved.
     const uint32_t stale = n_blocks - std::min(pool_valid_pos/ratio, n_blocks);
     const uint32_t own   = (n_tokens + ratio - 1)/ratio + 1;
     const uint32_t grow  = (n_pad_kv + ratio - 1)/ratio;
@@ -846,6 +853,8 @@ void llama_memory_hybrid_idx::set_input_qsa(
         if (qsa_pool_one_seq()) {
             qsa_pool_validate((uint32_t) n_kv);
         } else {
+            // the whole table was rewritten (n_recomp == n_blocks), but in an order that
+            // the next ubatch's sequence set may not reproduce, so it is not kept
             GGML_ASSERT(n_recomp == n_blocks);
             qsa_pool_invalidate();
         }
