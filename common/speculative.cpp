@@ -2527,6 +2527,7 @@ common_speculative_init_result::common_speculative_init_result(
 
     if (spec_mtp) {
         cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+        mparams.mtp_target = model_tgt;
     }
 
     // the draft context holds as many tokens per sequence as the target context

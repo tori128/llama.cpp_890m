@@ -218,6 +218,9 @@ struct llama_layer_shortconv {
 };
 
 struct llama_layer_nextn {
+    struct ggml_tensor * hc_head_norm          = nullptr;
+    struct ggml_tensor * hc_head_down          = nullptr;
+    struct ggml_tensor * hc_head_up            = nullptr;
     struct ggml_tensor * eh_proj               = nullptr;
     struct ggml_tensor * eh_proj_s             = nullptr;
     struct ggml_tensor * eh_proj_in_s          = nullptr;
@@ -770,6 +773,10 @@ struct llama_model {
     bool has_tensor_overrides() const;
 
     const struct ggml_tensor * get_tensor(const char * name) const;
+
+    void prefetch_rows(const struct ggml_tensor * t, const int32_t * rows, size_t n_rows) const;
+
+    virtual std::vector<const struct ggml_tensor *> gather_tables() const { return {}; }
 
     float get_rope_freq_base (const llama_cparams & cparams, int il) const;
     float get_rope_freq_scale(const llama_cparams & cparams, int il) const;

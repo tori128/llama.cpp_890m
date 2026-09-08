@@ -24,7 +24,7 @@ int main() {
             {1, 13}, {17, 128 * 1024}, {0, expected.size()},
             {expected.size() - 2, std::numeric_limits<size_t>::max()},
             {expected.size(), 4096}, {0, 0}}) {
-        mapping.release_range(range.first, range.second);
+        mapping.release_range(range.first, range.second, file.file_id());
         GGML_ASSERT(std::memcmp(mapping.addr(), expected.data(), expected.size()) == 0);
     }
     std::puts("mmap release preserves file contents and mapping access: OK");

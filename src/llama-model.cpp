@@ -1151,6 +1151,15 @@ struct llama_model::impl {
     // model memory mapped files
     llama_mmaps mappings;
 
+    struct gather_range {
+        const ggml_tensor * tensor;
+        uint16_t idx;
+        size_t offs;
+        size_t len;
+    };
+
+    std::vector<gather_range> gather_ranges;
+
     // objects representing data potentially being locked in memory
     llama_mlocks mlock_bufs;
     llama_mlocks mlock_mmaps;
@@ -1296,7 +1305,13 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
     // n_head_kv is optional, default to n_head
     hparams.n_head_kv_arr = hparams.n_head_arr;
 
-    ml.get_key_or_arr(LLM_KV_ATTENTION_HEAD_COUNT_KV, hparams.n_head_kv_arr, hparams.n_layer(), false);
+    // BailingMoE3 writes the NextN block's K/V head count into this array.
+    // The generic layer count excludes NextN, whereas the BailingMoE3 GGUF
+    // metadata covers every physical block.
+    const uint32_t n_head_kv_layers = arch == LLM_ARCH_BAILINGMOE3
+        ? hparams.n_layer_all
+        : hparams.n_layer();
+    ml.get_key_or_arr(LLM_KV_ATTENTION_HEAD_COUNT_KV, hparams.n_head_kv_arr, n_head_kv_layers, false);
 
     bool rope_finetuned = false;
     ml.get_key(LLM_KV_ROPE_SCALING_FINETUNED, rope_finetuned, false);
@@ -1683,7 +1698,36 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
-    ml.init_mappings(true, use_mlock ? &pimpl->mlock_mmaps : nullptr);
+    std::vector<impl::gather_range> nominated;
+    for (const ggml_tensor * tensor : gather_tables()) {
+        if (tensor == nullptr || !ml.lazy.has(tensor)) {
+            continue;
+        }
+        const auto * weight = ml.get_weight(ggml_get_name(tensor));
+        if (weight == nullptr) {
+            continue;
+        }
+        nominated.push_back({ tensor, weight->idx, weight->offs, ggml_nbytes(tensor) });
+    }
+
+    // On a Vulkan or ROCm integrated GPU, the mmap prefetch would consume the
+    // same physical memory needed by the model and KV cache.  The lazy table
+    // path retains its row-level prefetches.
+    bool prefetch_mmaps = true;
+    if (ml.use_mmap) {
+        for (const auto & device : devices) {
+            ggml_backend_dev_props props;
+            ggml_backend_dev_get_props(device.dev, &props);
+            const char * backend = ggml_backend_reg_name(ggml_backend_dev_backend_reg(device.dev));
+            if (props.type == GGML_BACKEND_DEVICE_TYPE_IGPU &&
+                    (strcmp(backend, "ROCm") == 0 || strcmp(backend, "Vulkan") == 0)) {
+                prefetch_mmaps = false;
+                break;
+            }
+        }
+    }
+
+    ml.init_mappings(prefetch_mmaps, use_mlock ? &pimpl->mlock_mmaps : nullptr);
     pimpl->mappings.reserve(ml.mappings.size());
 
     // create the backend buffers
@@ -1821,9 +1865,32 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         for (auto & mapping : ml.mappings) {
             pimpl->mappings.emplace_back(std::move(mapping));
         }
+
+        for (const auto & range : nominated) {
+            if (range.idx < pimpl->mappings.size() &&
+                    pimpl->mappings[range.idx]->contains(range.tensor->data, range.len)) {
+                pimpl->gather_ranges.push_back(range);
+                LLAMA_LOG_INFO("%s: %s: lazy read with batched gather prefetch, %.2f MiB\n",
+                        __func__, ggml_get_name(range.tensor), range.len / 1024.0 / 1024.0);
+            }
+        }
     }
 
     return true;
+}
+
+void llama_model::prefetch_rows(const struct ggml_tensor * tensor, const int32_t * rows, size_t n_rows) const {
+    if (tensor == nullptr || tensor->data == nullptr || n_rows == 0) {
+        return;
+    }
+
+    for (const auto & range : pimpl->gather_ranges) {
+        if (range.tensor == tensor) {
+            pimpl->mappings[range.idx]->prefetch_rows(
+                    tensor->data, tensor->nb[1], ggml_row_size(tensor->type, tensor->ne[0]), rows, n_rows);
+            return;
+        }
+    }
 }
 
 ggml_tensor * llama_model_base::create_tensor(llama_model_loader & ml, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
@@ -2439,6 +2506,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                 const bool mtp_on_hybrid_qwen =
                     params.ctx_type == LLAMA_CONTEXT_TYPE_MTP &&
                     (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE ||
+                     (arch == LLM_ARCH_QWEN4EXP && hparams.n_layer_nextn > 0) ||
                      arch == LLM_ARCH_BAILINGMOE3);
 
                 const bool mtp_on_hybrid_nemotron =
@@ -2697,6 +2765,7 @@ llama_model_params llama_model_default_params() {
         /*.progress_callback           =*/ nullptr,
         /*.progress_callback_user_data =*/ nullptr,
         /*.kv_overrides                =*/ nullptr,
+        /*.mtp_target                  =*/ nullptr,
         /*.vocab_only                  =*/ false,
         /*.check_tensors               =*/ false,
         /*.use_extra_bufts             =*/ true,
@@ -3147,7 +3216,7 @@ ggml_tensor * llama_model_base::create_tensor(const LLM_TN_IMPL & tn, const std:
 }
 
 void llama_model_base::create_tensor_gate_up_exps(llama_layer & layer, int bid, int64_t n_embd_, int64_t n_ff_, int64_t n_expert_, int flags) {
-    layer.ffn_gate_up_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_UP_EXPS, "weight", bid), {n_embd_, n_ff_ * 2, n_expert_}, TENSOR_NOT_REQUIRED);
+    layer.ffn_gate_up_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_UP_EXPS, "weight", bid), {n_embd_, n_ff_ * 2, n_expert_}, TENSOR_NOT_REQUIRED | flags);
     if (layer.ffn_gate_up_exps == nullptr) {
         layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", bid), {n_embd_, n_ff_, n_expert_}, flags);
         layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", bid), {n_embd_, n_ff_, n_expert_}, flags);

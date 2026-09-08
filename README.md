@@ -51,12 +51,12 @@ llama serve -hf ggml-org/Qwen3.5-0.8B-GGUF
 
 ## Flash-Next Vulkan profile (this fork)
 
-This profile is for Qwen3.8 Flash-Next IQ4_XS-M64 and a matching Q4_K_M MTP
-draft. Download the [unified release](https://github.com/tori128/llama.cpp_890m/releases/tag/unified-ece817752), keep all 28 target GGUF shards in one directory, and pass
-`...-00001-of-00028.gguf` to `--model`.
+This profile is for Qwen3.8 Flash-Next Q2_K_XL and its shared Q4_K_M MTP
+draft. Keep all three target GGUF shards in one directory, and pass
+`...-00001-of-00003.gguf` to `--model`.
 
-The values below reproduce the Linux Vulkan shortcut used for the release
-benchmark on an AMD Ryzen AI 9 HX 370. `--threads`, `--threads-batch`, and
+The values below describe this branch's Linux Vulkan shortcut for an
+AMD Ryzen AI 9 HX 370. `--threads` and
 `LLAMA_QSA_GATHER=16384` are hardware-specific tuning values; measure them
 before using them on another system.
 
@@ -67,30 +67,25 @@ path variables with local paths.
 
 ```sh
 release_dir=/path/to/llama-unified-linux-vulkan
-model=/path/to/Qwen3.8-Flash-Next-AD-3.84bpw-IQ4_XS-M64-00001-of-00028.gguf
-draft=/path/to/Qwen3.8-Flash-Next-MTP-Q4_K_M.gguf
+model=/path/to/Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf
+draft=/path/to/mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf
 
 export LD_LIBRARY_PATH="$release_dir"
-export LLAMA_MMAP_RANDOM=1
-export LLAMA_PLE_HOST_GATHER=1
 export LLAMA_ATTN_ROT_DISABLE=1
 export LLAMA_QSA_GATHER=16384
 
 "$release_dir/llama-server" \
   --model "$model" \
-  --gpu-layers 99 --n-cpu-moe 0 --flash-attn on \
-  --load-mode mmap --no-host --no-repack --fit off \
-  --ctx-size 100000 --parallel 1 --threads 10 --threads-batch 10 \
-  --cache-prompt --cache-ram 2048 --ctx-checkpoints 4 \
-  --checkpoint-min-step 8192 --cache-reuse 0 \
-  --batch-size 2048 --ubatch-size 512 \
+  --gpu-layers 99 --flash-attn on \
+  --fit off \
+  --ctx-size 100000 --parallel 1 --threads 10 \
+  --cache-ram 2048 --ctx-checkpoints 4 \
   --cache-type-k q8_0 --cache-type-v q8_0 --kv-unified \
-  --jinja --reasoning on --reasoning-effort low --reasoning-preserve \
-  --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 \
-  --presence-penalty 0.0 --repeat-penalty 1.0 \
+  --reasoning on --reasoning-effort low --reasoning-preserve \
+  --temp 1.0 --top-k 20 --min-p 0.0 \
   --alias qwen3.8-flash-next --metrics --host 0.0.0.0 --port 1234 \
   --spec-type draft-mtp,ngram-mod --spec-draft-model "$draft" \
-  --spec-draft-n-max 3 --spec-draft-n-min 0 --spec-draft-p-min 0.75 \
+  --spec-draft-p-min 0.75 \
   --spec-draft-ngl all --spec-draft-type-k q8_0 --spec-draft-type-v q8_0
 ```
 
@@ -101,44 +96,39 @@ Extract the Windows Vulkan archive and retain its DLLs beside
 
 ```powershell
 $releaseDir = 'C:\path\to\llama-unified-windows-vulkan'
-$model = 'C:\path\to\Qwen3.8-Flash-Next-AD-3.84bpw-IQ4_XS-M64-00001-of-00028.gguf'
-$draft = 'C:\path\to\Qwen3.8-Flash-Next-MTP-Q4_K_M.gguf'
+$model = 'C:\path\to\Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf'
+$draft = 'C:\path\to\mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf'
 
-$env:LLAMA_MMAP_RANDOM = '1'
-$env:LLAMA_PLE_HOST_GATHER = '1'
 $env:LLAMA_ATTN_ROT_DISABLE = '1'
 $env:LLAMA_QSA_GATHER = '16384'
 
 & "$releaseDir\llama-server.exe" `
   --model "$model" `
-  --gpu-layers 99 --n-cpu-moe 0 --flash-attn on `
-  --load-mode mmap --no-host --no-repack --fit off `
-  --ctx-size 100000 --parallel 1 --threads 10 --threads-batch 10 `
-  --cache-prompt --cache-ram 2048 --ctx-checkpoints 4 `
-  --checkpoint-min-step 8192 --cache-reuse 0 `
-  --batch-size 2048 --ubatch-size 512 `
+  --gpu-layers 99 --flash-attn on `
+  --fit off `
+  --ctx-size 100000 --parallel 1 --threads 10 `
+  --cache-ram 2048 --ctx-checkpoints 4 `
   --cache-type-k q8_0 --cache-type-v q8_0 --kv-unified `
-  --jinja --reasoning on --reasoning-effort low --reasoning-preserve `
-  --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 `
-  --presence-penalty 0.0 --repeat-penalty 1.0 `
+  --reasoning on --reasoning-effort low --reasoning-preserve `
+  --temp 1.0 --top-k 20 --min-p 0.0 `
   --alias qwen3.8-flash-next --metrics --host 0.0.0.0 --port 1234 `
   --spec-type draft-mtp,ngram-mod --spec-draft-model "$draft" `
-  --spec-draft-n-max 3 --spec-draft-n-min 0 --spec-draft-p-min 0.75 `
+  --spec-draft-p-min 0.75 `
   --spec-draft-ngl all --spec-draft-type-k q8_0 --spec-draft-type-v q8_0
 ```
 
 > [!WARNING]
 > Windows supports this Flash-Next MTP and `ngram-mod` profile, but
-> `--load-mode mmap` is memory-mapped I/O, not direct SSD I/O. This fork does
+> the default loading mode uses memory-mapped I/O, not direct SSD I/O. This fork does
 > not explicitly release GPU-uploaded source-mapping pages or accessed PLE
 > pages on Windows, so system-memory use can grow during inference.
-> `--no-host` bypasses an additional GPU host buffer; it does not limit PLE
-> residency. Leave sufficient system and shared-GPU memory headroom for long
+> Leave sufficient system and shared-GPU memory headroom for long
 > contexts.
 
 On Linux Vulkan integrated GPUs, this fork explicitly releases source-mapping
-pages after GPU upload. `LLAMA_MMAP_RANDOM=1` handles sparse PLE access and row
-prefetch; it does not provide a Windows memory-residency limit.
+pages after GPU upload. Sparse PLE mappings receive random-access advice
+automatically, with row prefetch during inference. This does not provide a
+Windows memory-residency limit.
 
 ## Description
 

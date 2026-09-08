@@ -6,6 +6,7 @@
 
 #include <cstring>
 #include <climits>
+#include <cstdint>
 #include <stdexcept>
 #include <cerrno>
 #include <algorithm>
@@ -461,6 +462,67 @@ static llama_mmap::ranges ranges_complement(llama_mmap::ranges ranges, size_t li
 }
 #endif
 
+static size_t llama_mmap_page_size() {
+#if defined(_WIN32)
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (size_t) si.dwPageSize;
+#elif defined(_SC_PAGESIZE)
+    return (size_t) sysconf(_SC_PAGESIZE);
+#else
+    return 4096;
+#endif
+}
+
+static std::vector<std::pair<size_t, size_t>> llama_mmap_row_pages(
+        size_t base_off, size_t stride, size_t row_size, size_t map_size,
+        const int32_t * rows, size_t n_rows, size_t page_size) {
+    if (page_size == 0 || row_size == 0 || base_off > map_size) {
+        return {};
+    }
+
+    std::vector<size_t> pages;
+    pages.reserve(n_rows);
+
+    for (size_t i = 0; i < n_rows; ++i) {
+        if (rows[i] < 0) {
+            continue;
+        }
+        const size_t row = (size_t) rows[i];
+        const size_t remaining = map_size - base_off;
+        if (stride != 0 && row > remaining / stride) {
+            continue;
+        }
+        const size_t first = base_off + row * stride;
+        if (row_size > map_size - first) {
+            continue;
+        }
+        const size_t last = first + row_size;
+        for (size_t page = first / page_size; page <= (last - 1) / page_size; ++page) {
+            pages.push_back(page);
+        }
+    }
+
+    std::sort(pages.begin(), pages.end());
+    pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
+
+    std::vector<std::pair<size_t, size_t>> ranges;
+    for (size_t i = 0; i < pages.size();) {
+        size_t j = i + 1;
+        while (j < pages.size() && pages[j] == pages[j - 1] + 1) {
+            ++j;
+        }
+        const size_t off = pages[i] * page_size;
+        const size_t span_pages = pages[j - 1] - pages[i] + 1;
+        const size_t available = map_size - off;
+        const size_t len = span_pages > available / page_size ? available : span_pages * page_size;
+        ranges.emplace_back(off, len);
+        i = j;
+    }
+
+    return ranges;
+}
+
 struct llama_mmap::impl {
 #ifdef _POSIX_MAPPED_FILES
     std::vector<std::pair<size_t, size_t>> mapped_fragments;
@@ -562,6 +624,15 @@ struct llama_mmap::impl {
         mapped_fragments = std::move(new_mapped_fragments);
     }
 
+    void prefetch_rows(const void * base, size_t stride, size_t row_size,
+            const int32_t * rows, size_t n_rows) const {
+        const size_t base_off = (uintptr_t) base - (uintptr_t) addr;
+        for (const auto & [off, len] : llama_mmap_row_pages(
+                    base_off, stride, row_size, size, rows, n_rows, llama_mmap_page_size())) {
+            posix_madvise((char *) addr + off, len, POSIX_MADV_WILLNEED);
+        }
+    }
+
     ~impl() {
         for (const auto & frag : mapped_fragments) {
             if (munmap((char *) addr + frag.first, frag.second - frag.first)) {
@@ -626,6 +697,34 @@ struct llama_mmap::impl {
         GGML_UNUSED(last);
     }
 
+    void prefetch_rows(const void * base, size_t stride, size_t row_size,
+            const int32_t * rows, size_t n_rows) const {
+#if _WIN32_WINNT >= 0x602
+        BOOL (WINAPI * pPrefetchVirtualMemory) (HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
+        HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+        pPrefetchVirtualMemory = (decltype(pPrefetchVirtualMemory)) (void *) GetProcAddress(hKernel32, "PrefetchVirtualMemory");
+        if (!pPrefetchVirtualMemory) {
+            return;
+        }
+
+        const size_t base_off = (uintptr_t) base - (uintptr_t) addr;
+        std::vector<WIN32_MEMORY_RANGE_ENTRY> entries;
+        for (const auto & [off, len] : llama_mmap_row_pages(
+                    base_off, stride, row_size, size, rows, n_rows, llama_mmap_page_size())) {
+            entries.push_back({ (char *) addr + off, (SIZE_T) len });
+        }
+        if (!entries.empty()) {
+            pPrefetchVirtualMemory(GetCurrentProcess(), (ULONG_PTR) entries.size(), entries.data(), 0);
+        }
+#else
+        GGML_UNUSED(base);
+        GGML_UNUSED(stride);
+        GGML_UNUSED(row_size);
+        GGML_UNUSED(rows);
+        GGML_UNUSED(n_rows);
+#endif
+    }
+
     ~impl() {
         if (hMapping) {
             if (addr) {
@@ -656,7 +755,22 @@ struct llama_mmap::impl {
 
         throw std::runtime_error("mmap not supported");
     }
+
+    void prefetch_rows(const void * base, size_t stride, size_t row_size,
+            const int32_t * rows, size_t n_rows) const {
+        GGML_UNUSED(base);
+        GGML_UNUSED(stride);
+        GGML_UNUSED(row_size);
+        GGML_UNUSED(rows);
+        GGML_UNUSED(n_rows);
+    }
 #endif
+
+    bool contains(const void * ptr, size_t len) const {
+        const uintptr_t p = (uintptr_t) ptr;
+        const uintptr_t b = (uintptr_t) addr;
+        return p >= b && len <= size && p - b <= size - len;
+    }
 
     void * addr;
     size_t size;
@@ -670,6 +784,42 @@ size_t llama_mmap::size() const { return pimpl->size; }
 void * llama_mmap::addr() const { return pimpl->addr; }
 
 void llama_mmap::unmap_fragment(size_t first, size_t last) { pimpl->unmap_fragment(first, last); }
+
+void llama_mmap::release_range(size_t offset, size_t len, int file_id) {
+#if defined(__linux__)
+    if (offset >= size() || len == 0) {
+        return;
+    }
+    const size_t page = llama_mmap_page_size();
+    const size_t first = offset + (page - offset % page) % page;
+    const size_t last = (offset + std::min(len, size() - offset)) / page * page;
+    if (first >= last) {
+        return;
+    }
+    // Keep partial pages shared with adjacent tensors.
+    if (madvise((char *) addr() + first, last - first, MADV_DONTNEED)) {
+        LLAMA_LOG_WARN("warning: release mmap pages failed: %s\n", strerror(errno));
+    }
+    const int error = posix_fadvise(file_id, first, last - first, POSIX_FADV_DONTNEED);
+    if (error) {
+        LLAMA_LOG_WARN("warning: release file cache failed: %s\n", strerror(error));
+    }
+#else
+    GGML_UNUSED(offset);
+    GGML_UNUSED(len);
+    GGML_UNUSED(file_id);
+#endif
+}
+
+bool llama_mmap::contains(const void * ptr, size_t len) const { return pimpl->contains(ptr, len); }
+
+void llama_mmap::prefetch_rows(const void * base, size_t stride, size_t row_size,
+        const int32_t * rows, size_t n_rows) const {
+    if (!pimpl->contains(base, row_size)) {
+        return;
+    }
+    pimpl->prefetch_rows(base, stride, row_size, rows, n_rows);
+}
 
 #if defined(_POSIX_MEMLOCK_RANGE) || defined(_WIN32)
 const bool llama_mmap::SUPPORTED  = true;
