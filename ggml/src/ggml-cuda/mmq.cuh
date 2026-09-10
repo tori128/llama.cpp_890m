@@ -1477,6 +1477,19 @@ void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, 
     int J_best        = 0;
     int ntiles_J_best = INT_MAX;
 
+    // On RDNA3.5, the automatic tile-width choice is not optimal for every
+    // grouped-GEMM/MTP shape.  Keep an explicit override for the measured
+    // Strix-Halo path while retaining the upstream selection by default.
+    static const char * mmq_id_j_env = getenv("GGML_CUDA_MMQ_ID_J");
+    const int J_forced = args.ids_dst && mmq_id_j_env ? atoi(mmq_id_j_env) : 0;
+    if (J_forced > 0) {
+        const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J_forced, fallback, cc);
+        if (config.type != GGML_TYPE_COUNT && mmq_get_nbytes_shared(config, cc) <= smpbo) {
+            J_best = J_forced;
+            ntiles_J_best = 1;
+        }
+    }
+
     for (int J = 8; J <= 128 && ntiles_J_best > 1; J += 8) {
         const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J, fallback, cc);
         if (config.type == GGML_TYPE_COUNT) {
