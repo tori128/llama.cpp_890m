@@ -1154,6 +1154,15 @@ struct llama_model::impl {
     // model memory mapped files
     llama_mmaps mappings;
 
+    struct gather_range {
+        const ggml_tensor * tensor;
+        uint16_t idx;
+        size_t offs;
+        size_t len;
+    };
+
+    std::vector<gather_range> gather_ranges;
+
     // objects representing data potentially being locked in memory
     llama_mlocks mlock_bufs;
     llama_mlocks mlock_mmaps;
@@ -1702,7 +1711,31 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
-    ml.init_mappings(true, use_mlock ? &pimpl->mlock_mmaps : nullptr);
+    std::vector<impl::gather_range> nominated;
+    for (const ggml_tensor * tensor : gather_tables()) {
+        if (tensor == nullptr || !ml.lazy.has(tensor)) {
+            continue;
+        }
+        const auto * weight = ml.get_weight(ggml_get_name(tensor));
+        if (weight != nullptr) {
+            nominated.push_back({ tensor, weight->idx, weight->offs, ggml_nbytes(tensor) });
+        }
+    }
+
+    bool prefetch_mmaps = true;
+#if defined(GGML_USE_HIP)
+    if (ml.use_mmap) {
+        for (const auto & dev : devices) {
+            ggml_backend_dev_props props;
+            ggml_backend_dev_get_props(dev.dev, &props);
+            if (props.type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                prefetch_mmaps = false;
+                break;
+            }
+        }
+    }
+#endif
+    ml.init_mappings(prefetch_mmaps, use_mlock ? &pimpl->mlock_mmaps : nullptr);
     pimpl->mappings.reserve(ml.mappings.size());
 
     // create the backend buffers
@@ -1848,9 +1881,42 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         for (auto & mapping : ml.mappings) {
             pimpl->mappings.emplace_back(std::move(mapping));
         }
+
+        const llama_mmap_random_mode random_mode = llama_mmap_random_mode_get();
+        if (random_mode != LLAMA_MMAP_RANDOM_OFF) {
+            for (auto & mapping : pimpl->mappings) {
+                mapping->advise_random(random_mode == LLAMA_MMAP_RANDOM_DROP);
+            }
+            LLAMA_LOG_INFO("%s: LLAMA_MMAP_RANDOM advised %zu mapping(s)%s\n",
+                    __func__, pimpl->mappings.size(),
+                    random_mode == LLAMA_MMAP_RANDOM_DROP ? ", dropped cached pages" : "");
+        }
+
+        for (const auto & range : nominated) {
+            if (range.idx < pimpl->mappings.size() &&
+                    pimpl->mappings[range.idx]->contains(range.tensor->data, range.len)) {
+                pimpl->gather_ranges.push_back(range);
+                LLAMA_LOG_INFO("%s: %s: lazy read with batched gather prefetch, %.2f MiB\n",
+                        __func__, ggml_get_name(range.tensor), range.len / 1024.0 / 1024.0);
+            }
+        }
     }
 
     return true;
+}
+
+void llama_model::prefetch_rows(const struct ggml_tensor * tensor, const int32_t * rows, size_t n_rows) const {
+    if (tensor == nullptr || tensor->data == nullptr || n_rows == 0) {
+        return;
+    }
+
+    for (const auto & range : pimpl->gather_ranges) {
+        if (range.tensor == tensor) {
+            pimpl->mappings[range.idx]->prefetch_rows(
+                    tensor->data, tensor->nb[1], ggml_row_size(tensor->type, tensor->ne[0]), rows, n_rows);
+            return;
+        }
+    }
 }
 
 ggml_tensor * llama_model_base::create_tensor(llama_model_loader & ml, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
@@ -2510,6 +2576,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                 const bool mtp_on_hybrid_qwen =
                     params.ctx_type == LLAMA_CONTEXT_TYPE_MTP &&
                     (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE ||
+                     (arch == LLM_ARCH_QWEN4EXP && hparams.n_layer_nextn > 0) ||
                      arch == LLM_ARCH_BAILINGMOE3);
 
                 const bool mtp_on_hybrid_nemotron =
@@ -2768,6 +2835,7 @@ llama_model_params llama_model_default_params() {
         /*.progress_callback           =*/ nullptr,
         /*.progress_callback_user_data =*/ nullptr,
         /*.kv_overrides                =*/ nullptr,
+        /*.mtp_target                  =*/ nullptr,
         /*.vocab_only                  =*/ false,
         /*.check_tensors               =*/ false,
         /*.use_extra_bufts             =*/ true,

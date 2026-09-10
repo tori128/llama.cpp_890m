@@ -4,11 +4,20 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <utility>
 #include <cstdio>
 
 struct llama_file;
 struct llama_mmap;
 struct llama_mlock;
+
+enum llama_mmap_random_mode {
+    LLAMA_MMAP_RANDOM_OFF,
+    LLAMA_MMAP_RANDOM_ON,
+    LLAMA_MMAP_RANDOM_DROP,
+};
+
+llama_mmap_random_mode llama_mmap_random_mode_get();
 
 using llama_files  = std::vector<std::unique_ptr<llama_file>>;
 using llama_mmaps  = std::vector<std::unique_ptr<llama_mmap>>;
@@ -54,6 +63,20 @@ struct llama_mmap {
     void * addr() const;
 
     void unmap_fragment(size_t first, size_t last);
+
+    void release_range(size_t offset, size_t len, int file_id);
+
+    // Change the file and mapping advice after sequential model loading has finished.
+    void advise_random(bool drop);
+    bool is_random() const;
+
+    // true if [ptr, ptr + len) lies inside this mapping
+    bool contains(const void * ptr, size_t len) const;
+
+    // ask the kernel to start reading the given rows. issued as one batch so the faults overlap
+    // instead of serializing.
+    void prefetch_rows(const void * base, size_t stride, size_t row_size,
+                       const int32_t * rows, size_t n_rows) const;
 
     static const bool SUPPORTED;
 

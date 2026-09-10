@@ -437,6 +437,7 @@ namespace GGUFMeta {
         return get_key(llm_kv(kid), result, required);
     }
 
+    template bool llama_model_loader::get_key<bool>       (const std::string & key, bool & result, bool required);
     template bool llama_model_loader::get_key<bool>       (enum llm_kv kid, bool & result,        bool required);
     template bool llama_model_loader::get_key<float>      (enum llm_kv kid, float & result,       bool required);
     template bool llama_model_loader::get_key<uint32_t>   (enum llm_kv kid, uint32_t & result,    bool required);
@@ -1660,7 +1661,20 @@ bool llama_model_loader::load_all_data(
                 mmap_used.first  = std::min(mmap_used.first,  weight->offs);
                 mmap_used.second = std::max(mmap_used.second, weight->offs + n_size);
             } else {
-                ggml_backend_tensor_set(cur, data, 0, n_size);
+                bool release_source = false;
+#if defined(__linux__)
+                auto * dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(cur->buffer));
+                release_source = !check_tensors && dev && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU &&
+                    strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)), "Vulkan") == 0;
+#endif
+                const size_t chunk_size = release_source ? 64 * 1024 * 1024 : n_size;
+                for (size_t offset = 0; offset < n_size; offset += chunk_size) {
+                    const size_t len = std::min(chunk_size, n_size - offset);
+                    ggml_backend_tensor_set(cur, data + offset, offset, len);
+                    if (release_source) {
+                        mapping->release_range(weight->offs + offset, len, files.at(weight->idx)->file_id());
+                    }
+                }
             }
         } else {
             const auto & file = files.at(weight->idx);
