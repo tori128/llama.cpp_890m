@@ -7,6 +7,7 @@
 // note: almost all graphs require at least sqrtf, so include cmath globally
 #include <cmath>
 #include <map>
+#include <tuple>
 
 class llama_memory_hybrid_idx_context;
 
@@ -2393,6 +2394,7 @@ struct llama_model_qwen4exp : public llama_model_base {
                     ggml_tensor * k_cur,
                     ggml_tensor * v_cur,
                     ggml_tensor * top_k,
+                    ggml_tensor * selection_mask,
                           float   kq_scale,
                             int   il);
 
@@ -2406,9 +2408,10 @@ struct llama_model_qwen4exp : public llama_model_base {
                           float   kq_scale,
                             int   il);
 
-        // the QSA cache layout inputs do not depend on the layer, only on its compress ratio,
-        // so the layers sharing a ratio share one input set
-        std::map<uint32_t, llm_graph_input_qsa *> qsa_inps;
+        // The cache-layout inputs do not depend on the layer. Include path flags so the
+        // compact block and legacy per-cell layouts cannot alias during graph reuse.
+        using qsa_input_key = std::tuple<uint32_t, bool, bool, bool>;
+        std::map<qsa_input_key, llm_graph_input_qsa *> qsa_inps;
 
         // QSA: token indices this layer's queries may attend to, or nullptr for dense
         ggml_tensor * build_qsa_top_k(
@@ -2416,6 +2419,7 @@ struct llama_model_qwen4exp : public llama_model_base {
                     ggml_tensor * cur,
                     ggml_tensor * inp_pos,
                     ggml_tensor * kq_mask,
+                    ggml_tensor ** selection_mask,
                             int * sections,
                             int   il);
 
