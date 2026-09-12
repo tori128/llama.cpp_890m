@@ -2396,6 +2396,16 @@ struct llama_model_qwen4exp : public llama_model_base {
                           float   kq_scale,
                             int   il);
 
+        ggml_tensor * build_attn_qsa_gather(
+                    ggml_tensor * k,
+                    ggml_tensor * v,
+                    ggml_tensor * kq_mask,
+                    ggml_tensor * q_cur,
+                    ggml_tensor * top_k,
+                    ggml_tensor * selection_mask,
+                          float   kq_scale,
+                            int   il);
+
         // the QSA cache layout inputs do not depend on the layer, only on its compress ratio,
         // so the layers sharing a ratio share one input set
         std::map<uint32_t, llm_graph_input_qsa *> qsa_inps;

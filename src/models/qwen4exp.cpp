@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstdlib>
+#include <limits>
 
 // bad metadata must be catchable: GGML_ASSERT aborts the whole process
 static void qwen4exp_require_nonzero(const llama_model_loader & ml, llm_kv kid, uint32_t value) {
@@ -742,6 +744,107 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     return top_k;
 }
 
+static int64_t qwen4exp_qsa_gather_n_sel(
+        const llama_hparams & hparams,
+        const llama_cparams & cparams,
+        const llama_ubatch &  ubatch,
+        int64_t               n_kv,
+        int64_t               width) {
+    static const int64_t min_kv = [] {
+        const char * env = std::getenv("LLAMA_QSA_GATHER");
+        if (env == nullptr) {
+            return (int64_t) 4096;
+        }
+
+        const int64_t value = std::atoll(env);
+        return value > 0 ? value : std::numeric_limits<int64_t>::max();
+    }();
+
+    if (!cparams.flash_attn || !cparams.causal_attn || hparams.use_alibi ||
+            ubatch.n_seqs_unq != 1 || (ubatch.is_pos_2d() && ubatch.token == nullptr) ||
+            ubatch.n_tokens == 0 || ubatch.n_tokens > 16 || n_kv < min_kv) {
+        return 0;
+    }
+
+    const int64_t n_sel = GGML_PAD(width, 256);
+    return n_sel < n_kv ? n_sel : 0;
+}
+
+// Decode-only QSA attention over a contiguous copy of the selected KV rows.
+// The dense path below remains the reference path for prefill and unsupported cache layouts.
+ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa_gather(
+        ggml_tensor * k,
+        ggml_tensor * v,
+        ggml_tensor * kq_mask,
+        ggml_tensor * q_cur,
+        ggml_tensor * top_k,
+        ggml_tensor * selection_mask,
+        float         kq_scale,
+        int           il) {
+    const int64_t d_k      = k->ne[0];
+    const int64_t d_v      = v->ne[0];
+    const int64_t n_head   = k->ne[1];
+    const int64_t n_kv     = k->ne[2];
+    const int64_t n_sel    = top_k->ne[0];
+    const int64_t n_tps    = top_k->ne[1];
+    const int64_t n_stream = top_k->ne[3];
+    const int64_t n_tokens = n_tps*n_stream;
+
+    GGML_ASSERT(selection_mask != nullptr && selection_mask->ne[0] == n_sel);
+    GGML_ASSERT(top_k->ne[2] == 1 && q_cur->ne[2] == n_tokens);
+    GGML_ASSERT(n_sel <= n_kv && k->ne[3] == n_stream);
+    GGML_ASSERT(v->ne[1] == n_head && v->ne[2] == n_kv && v->ne[3] == n_stream);
+    GGML_ASSERT(v->nb[1] <= v->nb[2]);
+    GGML_ASSERT(top_k->type == GGML_TYPE_I32);
+    GGML_ASSERT(kq_mask->type == GGML_TYPE_F16);
+    GGML_ASSERT(ggml_is_contiguous(top_k));
+    GGML_ASSERT(ggml_is_contiguous(q_cur));
+
+    ggml_tensor * idx = ggml_view_2d(ctx0, top_k, n_sel*n_tps, n_stream,
+            top_k->nb[3], 0);
+    ggml_tensor * k_rows = ggml_view_3d(ctx0, k, d_k*n_head, n_kv,
+            n_stream, k->nb[2], k->nb[3], 0);
+    ggml_tensor * v_rows = ggml_view_3d(ctx0, v, d_v*n_head, n_kv,
+            n_stream, v->nb[2], v->nb[3], 0);
+
+    ggml_tensor * k_sel = ggml_cast(ctx0, ggml_get_rows(ctx0, k_rows, idx), GGML_TYPE_F16);
+    ggml_tensor * v_sel = ggml_cast(ctx0, ggml_get_rows(ctx0, v_rows, idx), GGML_TYPE_F16);
+    cb(k_sel, "qsa_k_sel", il);
+    cb(v_sel, "qsa_v_sel", il);
+
+    ggml_tensor * k_g = ggml_view_4d(ctx0, k_sel, d_k, n_sel, n_head, n_tokens,
+            ggml_row_size(k_sel->type, d_k*n_head),
+            ggml_row_size(k_sel->type, d_k),
+            ggml_row_size(k_sel->type, d_k*n_head*n_sel), 0);
+    ggml_tensor * v_g = ggml_view_4d(ctx0, v_sel, d_v, n_sel, n_head, n_tokens,
+            ggml_row_size(v_sel->type, d_v*n_head),
+            ggml_row_size(v_sel->type, d_v),
+            ggml_row_size(v_sel->type, d_v*n_head*n_sel), 0);
+    k_g = ggml_cont(ctx0, k_g);
+    v_g = ggml_cont(ctx0, v_g);
+
+    ggml_tensor * idx_w = ggml_view_3d(ctx0, top_k, n_sel, n_tps, n_stream,
+            top_k->nb[1], top_k->nb[3], 0);
+    ggml_tensor * m_sel = ggml_get_rows(ctx0,
+            ggml_reshape_4d(ctx0, kq_mask, 1, n_kv, n_tps, n_stream), idx_w);
+    m_sel = ggml_add(ctx0, m_sel,
+            ggml_reshape_4d(ctx0, selection_mask, 1, n_sel, n_tps, n_stream));
+
+    ggml_tensor * mask = ggml_cast(ctx0, m_sel, GGML_TYPE_F16);
+    mask = ggml_reshape_4d(ctx0, mask, n_sel, 1, 1, n_tokens);
+
+    ggml_tensor * q = ggml_reshape_4d(ctx0, q_cur, d_k, 1, q_cur->ne[1], n_tokens);
+    ggml_tensor * cur = ggml_flash_attn_ext(ctx0, q, k_g, v_g, mask, kq_scale,
+            hparams.f_max_alibi_bias,
+            hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
+    res->add_fused_node({LLM_FUSED_OP_FLASH_ATTN, cur, il});
+    ggml_prec_set_acc(cur, GGML_PREC_F32);
+
+    cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
+    ggml_build_forward_expand(gf, cur);
+    return cur;
+}
+
 // Dense GQA self-attention restricted to the cells that top_k names.
 // The mask build below copies the MLA sparse path in llm_graph_context::build_attn.
 ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
@@ -782,6 +885,42 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
     }
 
     ggml_tensor * kq_mask = inp->get_kq_mask();
+    ggml_tensor * k = mctx_cur->get_k(ctx0, il);
+    ggml_tensor * v = mctx_cur->get_v(ctx0, il);
+
+    const int64_t width = top_k->ne[0];
+    const int64_t n_sel = qwen4exp_qsa_gather_n_sel(
+            hparams, cparams, ubatch, k->ne[2], width);
+    if (n_sel > 0 && !inp->self_k_rot && !inp->self_v_rot &&
+            kq_mask->type == GGML_TYPE_F16 && v->nb[1] <= v->nb[2]) {
+        const int64_t n_pad = n_sel - width;
+        GGML_ASSERT(n_pad >= 0);
+
+        if (n_pad > 0) {
+            ggml_tensor * first = ggml_view_4d(ctx0, top_k, 1, top_k->ne[1], 1, top_k->ne[3],
+                    top_k->nb[1], top_k->nb[2], top_k->nb[3], 0);
+            ggml_tensor * pad = ggml_repeat_4d(ctx0, first, n_pad, top_k->ne[1], 1, top_k->ne[3]);
+            top_k = ggml_cont(ctx0, ggml_concat(ctx0, top_k, pad, 0));
+        }
+
+        ggml_tensor * selection_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32,
+                width, top_k->ne[1], 1, top_k->ne[3]);
+        selection_mask = ggml_fill(ctx0, selection_mask, 0.0f);
+        if (n_pad > 0) {
+            ggml_tensor * pad_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32,
+                    n_pad, top_k->ne[1], 1, top_k->ne[3]);
+            pad_mask = ggml_fill(ctx0, pad_mask, -INFINITY);
+            selection_mask = ggml_concat(ctx0, selection_mask, pad_mask, 0);
+        }
+
+        ggml_tensor * cur = build_attn_qsa_gather(
+                k, v, kq_mask, q_cur, top_k, selection_mask, kq_scale, il);
+        cb(cur, "kqv_out", il);
+        if (inp->self_v_rot) {
+            cur = llama_mul_mat_hadamard(ctx0, cur, inp->self_v_rot);
+        }
+        return cur;
+    }
 
     // prepare new kq mask - starts filled with -INFINITY
     ggml_tensor * kq_mask_all = ggml_fill(ctx0, kq_mask, -INFINITY);
@@ -810,8 +949,6 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
     kq_mask_top_k = ggml_add(ctx0, kq_mask_top_k, kq_mask);
 
     ggml_tensor * q = q_cur;
-    ggml_tensor * k = mctx_cur->get_k(ctx0, il);
-    ggml_tensor * v = mctx_cur->get_v(ctx0, il);
 
     // TODO: enable sparse attention when we are ready
     // ref: https://github.com/ggml-org/llama.cpp/pull/27970
