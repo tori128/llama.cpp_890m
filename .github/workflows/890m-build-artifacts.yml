@@ -57,6 +57,7 @@ jobs:
           export PATH=/opt/rocm/bin:$PATH
           cmake -S . -B build-rocm -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON \
             -DGGML_HIP=ON \
             '-DGPU_TARGETS=gfx1150;gfx1151' \
             -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang \
@@ -98,6 +99,7 @@ jobs:
           source /etc/profile.d/vulkan-sdk.sh 2>/dev/null || true
           cmake -S . -B build-vulkan -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON \
             -DGGML_VULKAN=ON \
             -DLLAMA_BUILD_SERVER=ON \
             -DLLAMA_CURL=OFF \
