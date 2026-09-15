@@ -154,7 +154,8 @@ jobs:
           runtime: system Vulkan driver
           "@.Trim() | Set-Content -Path "$bin/MANIFEST.txt"
           Compress-Archive -Path "$bin/*" -DestinationPath dist/llama-unified-windows-vulkan.zip
-          (Get-FileHash dist/llama-unified-windows-vulkan.zip -Algorithm SHA256).Hash | Set-Content -NoNewline dist/SHA256SUMS-windows-vulkan.txt
+          $hash = (Get-FileHash dist/llama-unified-windows-vulkan.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  llama-unified-windows-vulkan.zip" | Set-Content -NoNewline dist/SHA256SUMS-windows-vulkan.txt
       - uses: actions/upload-artifact@v6
         with:
           name: llama-unified-${{ github.sha }}-windows-vulkan
@@ -223,7 +224,8 @@ jobs:
           runtime: ROCm 7.14 runtime
           "@.Trim() | Set-Content -Path "$bin/MANIFEST.txt"
           Compress-Archive -Path "$bin/*" -DestinationPath dist/llama-unified-windows-rocm-gfx1150-gfx1151.zip
-          (Get-FileHash dist/llama-unified-windows-rocm-gfx1150-gfx1151.zip -Algorithm SHA256).Hash | Set-Content -NoNewline dist/SHA256SUMS-windows-rocm.txt
+          $hash = (Get-FileHash dist/llama-unified-windows-rocm-gfx1150-gfx1151.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  llama-unified-windows-rocm-gfx1150-gfx1151.zip" | Set-Content -NoNewline dist/SHA256SUMS-windows-rocm.txt
       - uses: actions/upload-artifact@v6
         with:
           name: llama-unified-${{ github.sha }}-windows-rocm-gfx1150-gfx1151
