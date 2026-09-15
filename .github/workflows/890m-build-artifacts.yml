@@ -166,7 +166,7 @@ jobs:
     needs: public-audit
     runs-on: windows-2022
     env:
-      ROCM_VERSION: 7.14.0
+      ROCM_VERSION: 10.0.0
     steps:
       - uses: actions/checkout@v6
       - name: Setup ROCm
@@ -220,7 +220,7 @@ jobs:
           platform: Windows
           backend: ROCm HIP
           target: gfx1150
-          runtime: ROCm 7.14 runtime
+          runtime: ROCm 10.0.0 runtime
           "@.Trim() | Set-Content -Path "$bin/MANIFEST.txt"
           Compress-Archive -Path "$bin/*" -DestinationPath dist/llama-unified-windows-rocm-gfx1150.zip
           "$((Get-FileHash dist/llama-unified-windows-rocm-gfx1150.zip -Algorithm SHA256).Hash)  llama-unified-windows-rocm-gfx1150.zip" | Set-Content -NoNewline dist/SHA256SUMS-windows-rocm.txt
