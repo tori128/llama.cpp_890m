@@ -154,21 +154,4 @@ jobs:
           gh release create "$TAG" dist/* \
             --repo "Nathanw1014/strix-halo-llamacpp" \
             --title "Strix Halo llama.cpp (gfx1151) — $TAG" \
-            --notes "$(cat <<'EOF'
-          The full gfx1151 Vulkan stack from the strix-halo-vulkan branch: FA + MoE-prefill
-          fixes, DeepSeek V4 lightning indexer + sparse attention (prefill and flat-cost
-          decode). See github.com/Nathanw1014/strix-halo-llamacpp for docs, measured gains
-          and per-fix upstream branches.
-
-          Artifacts
-          - llama-strix-halo-vulkan.tar.gz — Vulkan build, runs on RADV (Mesa) with no ROCm
-            dependency. Needs a system Vulkan driver; for the tarball with the bundled RADV
-            driver, use the portable tarball from the toolbox repo.
-          - llama-strix-halo-gfx1151-rocm.tar.gz — HIP build, AMDGPU target gfx1151. Requires
-            a ROCm 7.2.x runtime.
-          - SHA256SUMS-*.txt — checksums.
-
-          Built in CI on GitHub-hosted runners (no AMD GPU): compile-and-package only.
-          On-device validation happens on gfx1151 hardware before each tag is cut.
-          EOF
-          )"
+            --notes-file docs/flash-next-formal-20260919.md
