@@ -17,6 +17,50 @@ void store_a(uint m, uint k_pair, FLOAT_TYPEV2 value) {
     buf_a[a_shmem_index(m, k_pair)] = value;
 }
 
+#if LOAD_VEC_A == 8 && defined(DATA_A_IQ4_NL)
+// Read eight bytes from a 2-byte-aligned IQ4_NL payload without touching the next block.
+uvec3 fetch8(const uint b) {
+    const uint b4 = b & ~3u;
+    return uvec3(data_a_u32[b4 / 4], data_a_u32[b4 / 4 + 1], uint(data_a_u16[(b + 6) / 2]));
+}
+
+uvec2 unpack8b(const uvec3 r, const bool odd) {
+    return odd ? uvec2((r.x >> 16) | (r.y << 16), (r.y >> 16) | (r.z << 16)) : r.xy;
+}
+
+#define A_PREFETCH 1
+#define A_RAW_T uvec4
+
+uint a_lane_off(const uint row, const uint col) {
+    return (col * (p.stride_a / 32)) * 18 + 8 * (row % 2);
+}
+
+void fetch_a(const uint pos_a, const uint row, const uint col, const uint lane_off, out uvec4 raw) {
+    const uint base = (pos_a / 4) * 18 + lane_off - 8 * (row % 2);
+    const uint ib   = base / 18;
+    const uvec3 qs  = fetch8(base + 2 + 8 * (row % 2));
+    raw = uvec4(qs.x, qs.y, qs.z, uint(float16BitsToUint16(data_a_packed16[ib].d)));
+}
+
+void store_a_raw(const uint pos_a, const uint row, const uint col, const uint sidx, const uvec4 raw) {
+    const uint base = (pos_a / 4 + col * (p.stride_a / 32)) * 18;
+    const bool odd  = ((base + 2) & 2) != 0;
+    const uvec2 qs  = unpack8b(raw.xyz, odd);
+    const float d   = float(uint16BitsToFloat16(uint16_t(raw.w)));
+    const uint nib  = 4 * (row / 2);
+    const uint q0 = (qs.x >> nib) & 0x0F0F0F0F;
+    const uint q1 = (qs.y >> nib) & 0x0F0F0F0F;
+    const vec4 v0 = d * vec4(float(kvalues_iq4nl[q0 & 0xFF]), float(kvalues_iq4nl[(q0 >> 8) & 0xFF]),
+                             float(kvalues_iq4nl[(q0 >> 16) & 0xFF]), float(kvalues_iq4nl[q0 >> 24]));
+    const vec4 v1 = d * vec4(float(kvalues_iq4nl[q1 & 0xFF]), float(kvalues_iq4nl[(q1 >> 8) & 0xFF]),
+                             float(kvalues_iq4nl[(q1 >> 16) & 0xFF]), float(kvalues_iq4nl[q1 >> 24]));
+    buf_a[sidx]     = FLOAT_TYPEV2(v0.xy);
+    buf_a[sidx + 1] = FLOAT_TYPEV2(v0.zw);
+    buf_a[sidx + 2] = FLOAT_TYPEV2(v1.xy);
+    buf_a[sidx + 3] = FLOAT_TYPEV2(v1.zw);
+}
+#endif
+
 void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uint idx_m, const uint block, const uint end_k) {
 #if defined(DATA_A_F32) || defined(DATA_A_F16)
 #if LOAD_VEC_A == 8
@@ -261,23 +305,34 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
 
 #elif defined(DATA_A_IQ4_XS)
     const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
-    const uint k_pair = row * LOAD_VEC_A / 2;
+    const uint k_pair = row * LOAD_VEC_A / 4;
 
-    const uint ib = idx / 64;
-    const uint ib32 = (idx % 64) / 8;
+    const uint ib = idx / 32;
+    const uint ib32 = (idx % 32) / 4;
     const uint iq = 4 * ib32 + (idx % 4);
 
     const uint sl = (data_a[ib].scales_l[ib32/2] >> (4 * (ib32 & 1))) & 0xF;
     const uint sh = ((data_a[ib].scales_h) >> (2 * ib32)) & 3;
-    const uint qshift = idx & 4;
-    u8vec4 qs = unpack8((uint(data_a_packed32[ib].qs[iq]) >> qshift) & 0x0F0F0F0F);
-
     const float d = float(data_a[ib].d);
-    const vec4 v = d * float(int(sl | (sh << 4)) - 32) * vec4(kvalues_iq4nl[qs.x], kvalues_iq4nl[qs.y], kvalues_iq4nl[qs.z], kvalues_iq4nl[qs.w]);
+    const float dl = d * float(int(sl | (sh << 4)) - 32);
+    const uint vui = uint(data_a_packed32[ib].qs[iq]);
 
-    store_a(col, k_pair, FLOAT_TYPEV2(v.xy));
-    store_a(col, k_pair + 1, FLOAT_TYPEV2(v.zw));
+    const u8vec4 qs0 = unpack8( vui       & 0x0F0F0F0F);
+    const u8vec4 qs1 = unpack8((vui >> 4) & 0x0F0F0F0F);
+    const vec4 v0 = dl * vec4(kvalues_iq4nl[qs0.x], kvalues_iq4nl[qs0.y], kvalues_iq4nl[qs0.z], kvalues_iq4nl[qs0.w]);
+    const vec4 v1 = dl * vec4(kvalues_iq4nl[qs1.x], kvalues_iq4nl[qs1.y], kvalues_iq4nl[qs1.z], kvalues_iq4nl[qs1.w]);
+
+    store_a(col, k_pair,     FLOAT_TYPEV2(v0.xy));
+    store_a(col, k_pair + 1, FLOAT_TYPEV2(v0.zw));
+    store_a(col, k_pair + 8, FLOAT_TYPEV2(v1.xy));
+    store_a(col, k_pair + 9, FLOAT_TYPEV2(v1.zw));
+
 #elif defined(DATA_A_IQ4_NL)
+#if LOAD_VEC_A == 8
+    A_RAW_T raw;
+    fetch_a(pos_a, row, col, a_lane_off(row, col), raw);
+    store_a_raw(pos_a, row, col, a_shmem_index(col, row * LOAD_VEC_A / 2), raw);
+#else
     const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
     const uint k_pair = row * LOAD_VEC_A / 4;
 
@@ -292,6 +347,7 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
 
     store_a(col, k_pair + 8, d * FLOAT_TYPEV2(kvalues_iq4nl[bitfieldExtract(vui, 4, 4)],
                                             kvalues_iq4nl[vui >> 12]));
+#endif
 
 #elif defined(DATA_A_MXFP4)
     const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
