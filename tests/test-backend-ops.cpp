@@ -4250,6 +4250,7 @@ struct test_dsv4_hc_pre : public test_dsv4_hc {
 struct test_dsv4_hc_post : public test_dsv4_hc {
     const int64_t n_embd;
     const int64_t n_tokens;
+    const bool gated;
 
     std::string op_desc(ggml_tensor * t) override {
         GGML_UNUSED(t);
@@ -4257,11 +4258,13 @@ struct test_dsv4_hc_post : public test_dsv4_hc {
     }
 
     std::string vars() override {
-        return VARS_TO_STR2(n_embd, n_tokens);
+        return VARS_TO_STR3(n_embd, n_tokens, gated);
     }
 
-    test_dsv4_hc_post(int64_t n_embd = 31, int64_t n_tokens = 17)
-        : n_embd(n_embd), n_tokens(n_tokens) {}
+    bool run_whole_graph() override { return gated; }
+
+    test_dsv4_hc_post(int64_t n_embd = 31, int64_t n_tokens = 17, bool gated = false)
+        : n_embd(n_embd), n_tokens(n_tokens), gated(gated) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_embd, n_tokens);
@@ -4272,6 +4275,10 @@ struct test_dsv4_hc_post : public test_dsv4_hc {
 
         ggml_tensor * post = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hc, n_tokens);
         ggml_set_name(post, "post");
+
+        if (gated) {
+            post = ggml_scale(ctx, ggml_sigmoid(ctx, ggml_scale(ctx, post, 1.0f / (float) hc)), 2.0f);
+        }
 
         ggml_tensor * comb = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, hc, hc, n_tokens);
         ggml_set_name(comb, "comb");
@@ -8947,6 +8954,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_dsv4_hc_post(31, 17));
     test_cases.emplace_back(new test_dsv4_hc_post(128, 257));
     test_cases.emplace_back(new test_dsv4_hc_post(4096, 21));
+    test_cases.emplace_back(new test_dsv4_hc_post(31, 17, true));
+    test_cases.emplace_back(new test_dsv4_hc_post(2560, 21, true));
 
     // glu ops
     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {

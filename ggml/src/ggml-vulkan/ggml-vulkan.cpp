@@ -686,6 +686,14 @@ static constexpr std::initializer_list<std::array<int, 3>> topk_qsa_edges {
     { 5, 1, 4 }, // add->src[1]     == reshape
     { 6, 0, 5 }, // top_k->src[0]   == add
 };
+static constexpr std::initializer_list<ggml_op> hc_post_gate_pattern {
+    GGML_OP_SCALE, GGML_OP_UNARY, GGML_OP_SCALE, GGML_OP_DSV4_HC_POST
+};
+static constexpr std::initializer_list<std::array<int, 3>> hc_post_gate_edges {
+    { 1, 0, 0 }, // sigmoid->src[0]   == scale_in
+    { 2, 0, 1 }, // scale_out->src[0] == sigmoid
+    { 3, 2, 2 }, // hc_post->src[2]   == scale_out
+};
 static constexpr std::initializer_list<ggml_op> rms_norm_mul_add_mul_pattern { GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ADD, GGML_OP_MUL };
 static constexpr std::initializer_list<ggml_op> rms_norm_mul_add_pattern     { GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ADD };
 static constexpr std::initializer_list<ggml_op> rms_norm_mul_rope_view_set_rows_pattern { GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ROPE, GGML_OP_VIEW, GGML_OP_SET_ROWS };
@@ -1522,6 +1530,10 @@ struct vk_op_dsv4_hc_post_push_constants {
     uint32_t p_offset;
     uint32_t c_offset;
     uint32_t d_offset;
+
+    uint32_t gate;
+    float gate_scale_in;
+    float gate_scale_out;
 };
 
 struct vk_op_count_experts_push_constants {
@@ -2552,6 +2564,7 @@ struct ggml_backend_vk_context {
     bool fused_topk_moe_scale {};
     // QSA indexer gather+add+top_k fused into one radix-select
     bool fused_topk_qsa {};
+    bool fused_hc_post_gate {};
     rms_norm_mode fused_rms_norm_mode {RMS_NORM_COUNT};
 
     // for GGML_VK_PERF_LOGGER
@@ -10400,7 +10413,7 @@ static void ggml_vk_dsv4_hc_pre(ggml_backend_vk_context * ctx, vk_context& subct
     ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, { x_buf, w_buf, d_buf }, pc, { n_embd, n_tokens, 1 });
 }
 
-static void ggml_vk_dsv4_hc_post(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * x, const ggml_tensor * residual, const ggml_tensor * post, const ggml_tensor * comb, ggml_tensor * dst) {
+static void ggml_vk_dsv4_hc_post(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * x, const ggml_tensor * residual, const ggml_tensor * post, const ggml_tensor * comb, ggml_tensor * dst, const ggml_tensor * gate_scale_in = nullptr) {
     VK_LOG_DEBUG("ggml_vk_dsv4_hc_post(" << x << ", " << residual << ", " << post << ", " << comb << ", " << dst << ")");
 
     vk_pipeline pipeline = ctx->device->pipeline_dsv4_hc_post_f32;
@@ -10413,7 +10426,10 @@ static void ggml_vk_dsv4_hc_post(ggml_backend_vk_context * ctx, vk_context& subc
 
     const vk_subbuffer x_buf = ggml_vk_tensor_subbuffer(ctx, x,        true);
     const vk_subbuffer r_buf = ggml_vk_tensor_subbuffer(ctx, residual, true);
-    const vk_subbuffer p_buf = ggml_vk_tensor_subbuffer(ctx, post,     true);
+    // With a fused gate, post is scale(sigmoid(scale(p_src))) and the shader
+    // evaluates that chain while loading p_src.
+    const ggml_tensor * p_src = gate_scale_in ? gate_scale_in->src[0] : post;
+    const vk_subbuffer p_buf = ggml_vk_tensor_subbuffer(ctx, p_src,    true);
     const vk_subbuffer c_buf = ggml_vk_tensor_subbuffer(ctx, comb,     true);
     const vk_subbuffer d_buf = ggml_vk_tensor_subbuffer(ctx, dst,      true);
 
@@ -10421,12 +10437,15 @@ static void ggml_vk_dsv4_hc_post(ggml_backend_vk_context * ctx, vk_context& subc
         n_embd, n_tokens,
         ggml_vk_nb_elem(x, 0), ggml_vk_nb_elem(x, 1),
         ggml_vk_nb_elem(residual, 0), ggml_vk_nb_elem(residual, 1), ggml_vk_nb_elem(residual, 2),
-        ggml_vk_nb_elem(post, 0), ggml_vk_nb_elem(post, 1),
+        ggml_vk_nb_elem(p_src, 0), ggml_vk_nb_elem(p_src, 1),
         ggml_vk_nb_elem(comb, 0), ggml_vk_nb_elem(comb, 1), ggml_vk_nb_elem(comb, 2),
         ggml_vk_nb_elem(dst,  0), ggml_vk_nb_elem(dst,  1), ggml_vk_nb_elem(dst,  2),
         0, 0, 0, 0, 0,
+        gate_scale_in ? 1u : 0u,
+        gate_scale_in ? ggml_get_op_params_f32(gate_scale_in, 0) : 1.0f,
+        gate_scale_in ? ggml_get_op_params_f32(post, 0) : 1.0f,
     };
-    init_pushconst_tensor_offsets(ctx, pc, x, residual, post, comb, dst);
+    init_pushconst_tensor_offsets(ctx, pc, x, residual, p_src, comb, dst);
 
     ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, { x_buf, r_buf, p_buf, c_buf, d_buf }, pc, { n_embd, n_tokens, 1 });
 }
@@ -16296,7 +16315,14 @@ static bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgr
 
         break;
     case GGML_OP_SCALE:
-        ggml_vk_scale(ctx, compute_ctx, src0, node);
+        if (ctx->fused_hc_post_gate) {
+            ggml_tensor * hc_post = cgraph->nodes[node_idx + ctx->num_additional_fused_ops];
+            ggml_vk_dsv4_hc_post(ctx, compute_ctx,
+                    hc_post->src[0], hc_post->src[1], hc_post->src[2], hc_post->src[3],
+                    hc_post, node);
+        } else {
+            ggml_vk_scale(ctx, compute_ctx, src0, node);
+        }
 
         break;
     case GGML_OP_SQR:
@@ -17401,6 +17427,19 @@ static bool ggml_vk_can_fuse_unary_mul_pair(const struct ggml_cgraph * cgraph, i
            ggml_vk_can_fuse_unary_mul(cgraph, node_idx, node_idx + 1);
 }
 
+static bool ggml_vk_can_fuse_hc_post_gate(const struct ggml_cgraph * cgraph, int node_idx) {
+    const ggml_tensor * scale_in  = cgraph->nodes[node_idx];
+    const ggml_tensor * sigmoid   = cgraph->nodes[node_idx + 1];
+    const ggml_tensor * scale_out = cgraph->nodes[node_idx + 2];
+
+    // The shader folds scale -> sigmoid -> scale; a bias on either scale is not handled.
+    return ggml_get_unary_op(sigmoid) == GGML_UNARY_OP_SIGMOID &&
+           ggml_get_op_params_f32(scale_in, 1) == 0.0f &&
+           ggml_get_op_params_f32(scale_out, 1) == 0.0f &&
+           scale_in->src[0]->type == GGML_TYPE_F32 &&
+           ggml_are_same_shape(scale_in->src[0], scale_out);
+}
+
 static bool ggml_vk_can_fuse(const ggml_backend_vk_context * ctx, const struct ggml_cgraph * cgraph, int node_idx, std::initializer_list<enum ggml_op> ops) {
     if (ops.size() == 2 && ops.begin()[0] == GGML_OP_UNARY && ops.begin()[1] == GGML_OP_MUL) {
         return ggml_vk_can_fuse_unary_mul_pair(cgraph, node_idx);
@@ -18258,6 +18297,7 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
         ctx->fused_topk_moe_mode = TOPK_MOE_COUNT;
         ctx->fused_topk_moe_scale = false;
         ctx->fused_topk_qsa = false;
+        ctx->fused_hc_post_gate = false;
         ctx->fused_rms_norm_mode = RMS_NORM_COUNT;
         const char *fusion_string {};
         if (!ctx->device->disable_fusion) {
@@ -18314,6 +18354,13 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
                 op_srcs_fused_elementwise[0] = false;
                 op_srcs_fused_elementwise[1] = true;
                 op_srcs_fused_elementwise[2] = true;
+            } else if (ggml_can_fuse_subgraph(cgraph, i, hc_post_gate_pattern, { i + 3 }) &&
+                       ggml_check_edges(cgraph, i, hc_post_gate_edges) &&
+                       ggml_vk_can_fuse_hc_post_gate(cgraph, i)) {
+                ctx->num_additional_fused_ops = hc_post_gate_pattern.size() - 1;
+                ctx->fused_hc_post_gate = true;
+                fusion_string = "HC_POST_GATE";
+                std::fill_n(op_srcs_fused_elementwise, ctx->num_additional_fused_ops + 1, false);
             } else if (ggml_vk_can_fuse(ctx, cgraph, i, rms_norm_mul_add_mul_pattern)) {
                 ctx->num_additional_fused_ops = 3;
                 ctx->fused_rms_norm_mode = RMS_NORM_MUL_ADD_MUL;
@@ -18492,6 +18539,7 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
                 ctx->fused_topk_moe_mode = TOPK_MOE_COUNT;
                 ctx->fused_topk_moe_scale = false;
                 ctx->fused_topk_qsa = false;
+                ctx->fused_hc_post_gate = false;
                 ctx->fused_rms_norm_mode = RMS_NORM_COUNT;
                 fusion_string = nullptr;
             }
@@ -18733,6 +18781,11 @@ static void ggml_vk_graph_optimize(ggml_backend_t backend, struct ggml_cgraph * 
         if (keep_pattern(topk_qsa_pattern)) {
             continue;
         }
+        if (match_pattern(hc_post_gate_pattern, first_unused)) {
+            add_pattern_alloc_deps(hc_post_gate_pattern, first_unused + (int) hc_post_gate_pattern.size() - 1);
+            keep_pattern(hc_post_gate_pattern);
+            continue;
+        }
 
         if (keep_pattern(rms_norm_mul_add_mul_pattern)) {
             continue;
@@ -18788,7 +18841,8 @@ static void ggml_vk_graph_optimize(ggml_backend_t backend, struct ggml_cgraph * 
                 match_pattern(rms_norm_mul_add_pattern, j) ||
                 match_pattern(rms_norm_mul_rope_view_set_rows_pattern, j) ||
                 match_pattern(rms_norm_view_set_rows_pattern, j) ||
-                match_pattern(rope_view_set_rows_pattern, j)) {
+                match_pattern(rope_view_set_rows_pattern, j) ||
+                match_pattern(hc_post_gate_pattern, j)) {
                 continue;
             }
             bool ok = true;
