@@ -317,15 +317,24 @@ jobs:
           fi
           release_notes=release-assets/RELEASE_NOTES.md
           {
-            printf 'GitHub-hosted build artifacts for commit `%s`.\n' "$GITHUB_SHA"
-            printf '%s\n\n' 'Public-data audit and Linux/Windows Vulkan/ROCm builds succeeded.'
             if [ -f release-assets/BENCHMARK.md ]; then
               cat release-assets/BENCHMARK.md
             fi
           } > "$release_notes"
-          gh release create "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "$release_title" \
-            --notes-file "$release_notes" \
-            "${release_assets[@]}"
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$release_title" \
+              --notes-file "$release_notes"
+            gh release upload "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber \
+              "${release_assets[@]}"
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$release_title" \
+              --notes-file "$release_notes" \
+              "${release_assets[@]}"
+          fi
