@@ -31,13 +31,20 @@ jobs:
           fetch-depth: 0
       - name: Check newly published files
         shell: bash
+        env:
+          BENCHMARK_REPORT: ${{ inputs.benchmark_report }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-            range="${{ github.event.before }}..${{ github.sha }}"
+          if [ -n "$BENCHMARK_REPORT" ]; then
+            python3 scripts/ci/public_release_audit.py \
+              --path "docs/development/benchmarks/$BENCHMARK_REPORT"
           else
-            range="HEAD^..HEAD"
+            if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+              range="${{ github.event.before }}..${{ github.sha }}"
+            else
+              range="HEAD^..HEAD"
+            fi
+            python3 scripts/ci/public_release_audit.py --range "$range"
           fi
-          python3 scripts/ci/public_release_audit.py --range "$range"
 
   linux-rocm:
     name: Linux ROCm (gfx1150, gfx1151)
