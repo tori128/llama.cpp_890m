@@ -316,13 +316,11 @@ jobs:
             release_assets+=(release-assets/BENCHMARK.md)
           fi
           release_notes=release-assets/RELEASE_NOTES.md
-          {
-            printf 'GitHub-hosted build artifacts for commit `%s`.\n' "$GITHUB_SHA"
-            printf '%s\n\n' 'Public-data audit and Linux/Windows Vulkan/ROCm builds succeeded.'
-            if [ -f release-assets/BENCHMARK.md ]; then
-              cat release-assets/BENCHMARK.md
-            fi
-          } > "$release_notes"
+          if [ -f release-assets/BENCHMARK.md ]; then
+            cp release-assets/BENCHMARK.md "$release_notes"
+          else
+            printf '# %s\n' "$release_title" > "$release_notes"
+          fi
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
