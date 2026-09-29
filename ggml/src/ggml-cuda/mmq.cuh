@@ -481,23 +481,15 @@ static __device__ __forceinline__ void ggml_cuda_mmq_write_back_mma(
     typedef tile<16,  8, int> tile_C;
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
 
-    constexpr int warp_size     = ggml_cuda_get_physical_warp_size();
-    constexpr int nwarps        = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
-    constexpr int I             = ggml_cuda_mmq_get_I(type, J, fallback);
     constexpr int rows_per_warp = ggml_cuda_mmq_get_rows_per_warp(type, J, fallback);
     constexpr int ntx           = rows_per_warp/tile_C::I; // Number of x minitiles per warp.
 
-    constexpr int warps_i   = I / (ntx*tile_C::I);
-    constexpr int warps_j   = nwarps / warps_i > 0 ? nwarps / warps_i : 1;
-    const int wg = threadIdx.y / ntx;
-    const int i0 = (wg % warps_i) * (ntx*tile_C::I);
-    const int jg = wg / warps_i;
+    const int i0 = (threadIdx.y / ntx) * (ntx*tile_C::I);
 
     const bool y_scale_used = y_scale != nullptr;
 
 #pragma unroll
-    for (int jl = 0; jl < J / (warps_j*ntx*tile_C::J); ++jl) {
-        const int j0 = (jl*warps_j + jg) * (ntx*tile_C::J);
+    for (int j0 = 0; j0 < J; j0 += ntx*tile_C::J) {
 #pragma unroll
         for (int n = 0; n < ntx; ++n) {
 #pragma unroll
@@ -516,12 +508,12 @@ static __device__ __forceinline__ void ggml_cuda_mmq_write_back_mma(
 
                 if constexpr (type == GGML_TYPE_NVFP4) {
                     if (y_scale_used) {
-                        dst[ids_dst[j]*stride + i] = y_scale[j] * sum[(jl*ntx + n)*tile_C::ne + l];
+                        dst[ids_dst[j]*stride + i] = y_scale[j] * sum[(j0/tile_C::J + n)*tile_C::ne + l];
                     } else {
-                        dst[ids_dst[j]*stride + i] = sum[(jl*ntx + n)*tile_C::ne + l];
+                        dst[ids_dst[j]*stride + i] = sum[(j0/tile_C::J + n)*tile_C::ne + l];
                     }
                 } else {
-                    dst[ids_dst[j]*stride + i] = sum[(jl*ntx + n)*tile_C::ne + l];
+                    dst[ids_dst[j]*stride + i] = sum[(j0/tile_C::J + n)*tile_C::ne + l];
                     GGML_UNUSED(y_scale_used);
                 }
             }
@@ -545,8 +537,6 @@ struct ggml_cuda_mmq_util_funcs {
 
 template <ggml_type type, int J, bool fallback>
 static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_funcs() {
-    constexpr int I = ggml_cuda_mmq_get_I(type, J, fallback);
-
     if (!ggml_cuda_mmq_get_config(type, J, fallback).use_mma_data_layout()) {
         switch (type) {
             case GGML_TYPE_Q1_0:
@@ -1386,6 +1376,7 @@ struct mmq_args {
     int64_t nchannels_x; int64_t nchannels_y; int64_t stride_channel_x; int64_t stride_channel_y; int64_t stride_channel_dst;
     int64_t nsamples_x; int64_t nsamples_y; int64_t stride_sample_x; int64_t stride_sample_y; int64_t stride_sample_dst;
     int64_t ncols_max;
+    int64_t ncols_opt; // value to optimize the tile size against, launch grid still uses ncols_max
 };
 
 static size_t mmq_get_nbytes_shared(const ggml_cuda_mmq_config & config, const int cc) {
@@ -1486,17 +1477,9 @@ void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, 
     int J_best        = 0;
     int ntiles_J_best = INT_MAX;
 
+    // Allow measured grouped-GEMM tile selection without changing the default.
     static const char * mmq_id_j_env = getenv("GGML_CUDA_MMQ_ID_J");
-    int J_forced = args.ids_dst && mmq_id_j_env ? atoi(mmq_id_j_env) : 0;
-    const bool auto_j = args.ids_dst && (!mmq_id_j_env || strcmp(mmq_id_j_env, "auto") == 0) && GGML_CUDA_CC_IS_RDNA3_5(cc);
-    if (auto_j) {
-        if ((type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q6_K) && args.nchannels_y >= 256) {
-            J_forced = 64;
-        } else if (type == GGML_TYPE_Q8_0) {
-            const int ncols_avg = (args.ncols_dst + args.nchannels_y - 1)/args.nchannels_y;
-            J_forced = ncols_avg <= 24 ? 16 : ncols_avg <= 32 ? 32 : ncols_avg <= 48 ? 48 : ncols_avg <= 64 ? 96 : 0;
-        }
-    }
+    const int J_forced = args.ids_dst && mmq_id_j_env ? atoi(mmq_id_j_env) : 0;
     if (J_forced > 0) {
         const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J_forced, fallback, cc);
         if (config.type != GGML_TYPE_COUNT && mmq_get_nbytes_shared(config, cc) <= smpbo) {
@@ -1515,7 +1498,7 @@ void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, 
             continue;
         }
 
-        const int ntiles_x = (args.ncols_max + config.J - 1) / config.J;
+        const int ntiles_x = (args.ncols_opt + config.J - 1) / config.J;
 
         if (ntiles_x < ntiles_J_best) {
             J_best = J;
@@ -1623,7 +1606,5 @@ extern DECL_MMQ_CASE(GGML_TYPE_NVFP4);
 
 void ggml_cuda_mul_mat_q(
         ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst);
-
-void ggml_cuda_mul_mat_q_pair(ggml_backend_cuda_context & ctx, ggml_tensor * dst0, ggml_tensor * dst1);
 
 bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t n_experts);

@@ -26,17 +26,14 @@ identify which PRs require a version bump before cutting a release._
 
 ## Making a release
 
-Releases are created by running the [make-release](.github/workflows/make-release.yml)
-which is a manual workflow.
+Fork releases are created by running the [`Unified build artifacts`](../.github/workflows/890m-build-artifacts.yml)
+manual workflow after the version tag is present on the Fork `master`.
 
-The workflow runs against the branch selected in the "Run workflow" dialog
-(default `master`) and takes an optional `commit` SHA. When a commit is given,
-the workflow validates that the commit belongs to the branch and is not older
-than 3 days from the branch HEAD, then releases that commit instead of the
-branch HEAD.
+The workflow builds the supported Linux and Windows ROCm/Vulkan packages,
+attaches the performance report, and publishes the GitHub Release for the tag.
 
-The workflow creates an annotated git tag (e.g. `v0.1.0`) and pushes it to the
-remote. No GitHub Release object is created, the tag is the release artifact.
+The version tag is created from the merge commit on the Fork `master` before the
+workflow is started.
 
 ## Building a release
 
@@ -46,10 +43,20 @@ release tag must pass `-DLLAMA_BUILD_IS_DEV=OFF` to produce a clean version stri
 (e.g. `0.1.0` instead of `0.1.0-dev`).
 
 ## How releases reach users
-Currently releases are not published to github releases, only nightly/development
-builds are available there. The way users can access releases are using the following
-channels:
+Users access a published version through the following channels:
 
-- **llama-install.sh**  — downloads pre-built binaries built from the release tag.
+- **GitHub Releases** — download the packages and read the performance report.
 - **Package managers**  — consume the git tag directly.
 - **Build from source** — users clone the repo and check out the tag.
+
+## Fork release procedure
+
+The Fork release sequence is:
+
+1. verify the release changes on a dedicated `release/unified-*` branch;
+2. merge that branch into the Fork `master`;
+3. create the version tag from the resulting `master` commit;
+4. run `Unified build artifacts` for that tag with the performance report;
+5. publish the release page from that report.
+
+The release page contains the supported model settings, measurement conditions, performance results, comparison target, and applicable constraints.

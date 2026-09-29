@@ -24,12 +24,15 @@ layout (push_constant) uniform parameter
 } p;
 
 #define BLOCK_SIZE 256
-#define MAX_EXPERTS 512
 
 layout(local_size_x = BLOCK_SIZE, local_size_y = 1, local_size_z = 1) in;
 
 layout (binding = 0) readonly buffer A {uint data_a[];};
 layout (binding = 1) writeonly buffer D {uint data_d[];};
+
+// Upper bound for the hoisted row-id path. This must match the host-side
+// hoist_row_ids limit in ggml_vk_mul_mat_id_q_f16.
+#define MAX_EXPERTS 512
 
 shared uint vals[MAX_EXPERTS];
 shared uint offsets[MAX_EXPERTS];
@@ -47,8 +50,8 @@ void main() {
     const uint tid = gl_LocalInvocationID.x;
 
     if (p.hoist_row_ids != 0) {
-        for (uint expert = tid; expert < p.n_experts; expert += BLOCK_SIZE) {
-            vals[expert] = 0;
+        for (uint e = tid; e < p.n_experts; e += BLOCK_SIZE) {
+            vals[e] = 0;
         }
         barrier();
 

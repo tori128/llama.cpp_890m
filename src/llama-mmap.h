@@ -4,7 +4,6 @@
 #include <memory>
 #include <utility>
 #include <vector>
-#include <utility>
 #include <cstdio>
 
 struct llama_file;
@@ -22,6 +21,8 @@ struct llama_file {
 
     size_t tell() const;
     size_t size() const;
+
+    const std::string & name() const; // path this file was opened from
 
     int file_id() const; // fileno overload
 
@@ -55,16 +56,6 @@ struct llama_mmap {
     void * addr() const;
 
     void unmap_fragment(size_t first, size_t last);
-
-    void release_range(size_t offset, size_t len, int file_id);
-
-    // true if [ptr, ptr + len) lies inside this mapping
-    bool contains(const void * ptr, size_t len) const;
-
-    // ask the kernel to start reading the given rows. issued as one batch so the faults overlap
-    // instead of serializing.
-    void prefetch_rows(const void * base, size_t stride, size_t row_size,
-                       const int32_t * rows, size_t n_rows) const;
 
     static const bool SUPPORTED;
 

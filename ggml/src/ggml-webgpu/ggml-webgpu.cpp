@@ -4006,16 +4006,17 @@ static void ggml_backend_webgpu_request_adapter(wgpu::Instance & instance, wgpu:
     options.nextInChain                   = &adapterTogglesDesc;
 #endif
 
-    instance.WaitAny(instance.RequestAdapter(
-                         &options, wgpu::CallbackMode::AllowSpontaneous,
-                         [&adapter](wgpu::RequestAdapterStatus status, wgpu::Adapter _adapter, const char * message) {
-                             if (status != wgpu::RequestAdapterStatus::Success) {
-                                 GGML_LOG_ERROR("ggml_webgpu: Failed to get an adapter: %s\n", message);
-                                 return;
-                             }
-                             adapter = std::move(_adapter);
-                         }),
-                     UINT64_MAX);
+    instance.WaitAny(
+        instance.RequestAdapter(
+            &options, wgpu::CallbackMode::AllowSpontaneous,
+            [&adapter](wgpu::RequestAdapterStatus status, wgpu::Adapter _adapter, wgpu::StringView message) {
+                if (status != wgpu::RequestAdapterStatus::Success) {
+                    GGML_LOG_ERROR("ggml_webgpu: Failed to get an adapter: %s\n", std::string(message).c_str());
+                    return;
+                }
+                adapter = std::move(_adapter);
+            }),
+        UINT64_MAX);
 }
 
 static void create_webgpu_device(ggml_backend_webgpu_reg_context * ctx) {
@@ -4324,12 +4325,22 @@ static bool ggml_backend_webgpu_device_supports_op(ggml_backend_dev_t dev, const
                            src0->type == GGML_TYPE_F32 && (src1->type == GGML_TYPE_I64 || src1->type == GGML_TYPE_I32));
             break;
         case GGML_OP_GET_ROWS:
-            if (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16 || ggml_webgpu_supported_qtype(src0->type)) {
-                supports_op = (op->type == GGML_TYPE_F32);
-            } else if (src0->type == GGML_TYPE_I32) {
-                supports_op = op->type == GGML_TYPE_I32;
+            {
+                const size_t storage_alignment =
+                    ctx->webgpu_global_ctx->capabilities.limits.minStorageBufferOffsetAlignment;
+                const size_t src_address_unit =
+                    src0->type == GGML_TYPE_F32 && op->ne[0] % 4 == 0 ? 4 * sizeof(float) : ggml_type_size(src0->type);
+                if (ggml_webgpu_tensor_misalignment(src0, storage_alignment) % src_address_unit != 0) {
+                    break;
+                }
+                if (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16 ||
+                    ggml_webgpu_supported_qtype(src0->type)) {
+                    supports_op = (op->type == GGML_TYPE_F32);
+                } else if (src0->type == GGML_TYPE_I32) {
+                    supports_op = op->type == GGML_TYPE_I32;
+                }
+                break;
             }
-            break;
         case GGML_OP_MUL_MAT:
             {
                 switch (src1->type) {

@@ -40,26 +40,28 @@ layout(buffer_reference, std430, buffer_reference_align = 1) buffer decodeBufFA_
 #if !defined(BFLOAT16)
 float16_t faDecodeK(const decodeBufFA_K bl_in, const uint blockCoords[2], const uint coordInBlock[2]) {
     switch (FaTypeK) {
-        case FA_TYPE_F32:  return dequantFuncF32 (decodeBufF32 (bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q4_0: return dequantFuncQ4_0(decodeBufQ4_0(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q4_1: return dequantFuncQ4_1(decodeBufQ4_1(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q5_0: return dequantFuncQ5_0(decodeBufQ5_0(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q5_1: return dequantFuncQ5_1(decodeBufQ5_1(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q8_0: return dequantFuncQ8_0(decodeBufQ8_0(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_IQ4_NL: return dequantFuncIQ4_NL(decodeBufIQ4_NL(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_F32:  return dequantFuncF32 (decodeBufF32 (bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q4_0: return dequantFuncQ4_0(decodeBufQ4_0(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q4_1: return dequantFuncQ4_1(decodeBufQ4_1(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q5_0: return dequantFuncQ5_0(decodeBufQ5_0(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q5_1: return dequantFuncQ5_1(decodeBufQ5_1(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q8_0: return dequantFuncQ8_0(decodeBufQ8_0(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_IQ4_NL: return dequantFuncIQ4_NL(decodeBufIQ4_NL(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q1_0: return dequantFuncQ1_0(decodeBufQ1_0(bl_in), blockCoords, coordInBlock);
         default: return float16_t(0);
     }
 }
 
 float16_t faDecodeV(const decodeBufFA_V bl_in, const uint blockCoords[2], const uint coordInBlock[2]) {
     switch (FaTypeV) {
-        case FA_TYPE_F32:  return dequantFuncF32 (decodeBufF32 (bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q4_0: return dequantFuncQ4_0(decodeBufQ4_0(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q4_1: return dequantFuncQ4_1(decodeBufQ4_1(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q5_0: return dequantFuncQ5_0(decodeBufQ5_0(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q5_1: return dequantFuncQ5_1(decodeBufQ5_1(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q8_0: return dequantFuncQ8_0(decodeBufQ8_0(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_IQ4_NL: return dequantFuncIQ4_NL(decodeBufIQ4_NL(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_F32:  return dequantFuncF32 (decodeBufF32 (bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q4_0: return dequantFuncQ4_0(decodeBufQ4_0(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q4_1: return dequantFuncQ4_1(decodeBufQ4_1(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q5_0: return dequantFuncQ5_0(decodeBufQ5_0(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q5_1: return dequantFuncQ5_1(decodeBufQ5_1(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q8_0: return dequantFuncQ8_0(decodeBufQ8_0(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_IQ4_NL: return dequantFuncIQ4_NL(decodeBufIQ4_NL(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q1_0: return dequantFuncQ1_0(decodeBufQ1_0(bl_in), blockCoords, coordInBlock);
         default: return float16_t(0);
     }
 }
@@ -67,26 +69,26 @@ float16_t faDecodeV(const decodeBufFA_V bl_in, const uint blockCoords[2], const 
 // V=4 vector decode for K/V; dispatches to per-format _v decoders.
 f16vec4 faDecodeKVector(const decodeBufFA_K bl_in, const uint blockCoords[2], const uint coordInBlock[2]) {
     switch (FaTypeK) {
-        case FA_TYPE_F32: return f16vec4(decodeBufF32(bl_in).block);
-        case FA_TYPE_Q4_0: return dequantFuncQ4_0_v(decodeBufQ4_0(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q4_1: return dequantFuncQ4_1_v(decodeBufQ4_1(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q5_0: return dequantFuncQ5_0_v(decodeBufQ5_0(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q5_1: return dequantFuncQ5_1_v(decodeBufQ5_1(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q8_0: return dequantFuncQ8_0_v(decodeBufQ8_0(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_IQ4_NL: return dequantFuncIQ4_NL_v(decodeBufIQ4_NL(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_F32: return f16vec4(decodeBufF32(bl_in).block);
+        case GGML_TYPE_Q4_0: return dequantFuncQ4_0_v(decodeBufQ4_0(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q4_1: return dequantFuncQ4_1_v(decodeBufQ4_1(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q5_0: return dequantFuncQ5_0_v(decodeBufQ5_0(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q5_1: return dequantFuncQ5_1_v(decodeBufQ5_1(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q8_0: return dequantFuncQ8_0_v(decodeBufQ8_0(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_IQ4_NL: return dequantFuncIQ4_NL_v(decodeBufIQ4_NL(bl_in), blockCoords, coordInBlock);
         default: return f16vec4(0);
     }
 }
 
 f16vec4 faDecodeVVector(const decodeBufFA_V bl_in, const uint blockCoords[2], const uint coordInBlock[2]) {
     switch (FaTypeV) {
-        case FA_TYPE_F32: return f16vec4(decodeBufF32(bl_in).block);
-        case FA_TYPE_Q4_0: return dequantFuncQ4_0_v(decodeBufQ4_0(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q4_1: return dequantFuncQ4_1_v(decodeBufQ4_1(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q5_0: return dequantFuncQ5_0_v(decodeBufQ5_0(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q5_1: return dequantFuncQ5_1_v(decodeBufQ5_1(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_Q8_0: return dequantFuncQ8_0_v(decodeBufQ8_0(bl_in), blockCoords, coordInBlock);
-        case FA_TYPE_IQ4_NL: return dequantFuncIQ4_NL_v(decodeBufIQ4_NL(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_F32: return f16vec4(decodeBufF32(bl_in).block);
+        case GGML_TYPE_Q4_0: return dequantFuncQ4_0_v(decodeBufQ4_0(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q4_1: return dequantFuncQ4_1_v(decodeBufQ4_1(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q5_0: return dequantFuncQ5_0_v(decodeBufQ5_0(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q5_1: return dequantFuncQ5_1_v(decodeBufQ5_1(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_Q8_0: return dequantFuncQ8_0_v(decodeBufQ8_0(bl_in), blockCoords, coordInBlock);
+        case GGML_TYPE_IQ4_NL: return dequantFuncIQ4_NL_v(decodeBufIQ4_NL(bl_in), blockCoords, coordInBlock);
         default: return f16vec4(0);
     }
 }
@@ -151,7 +153,7 @@ D_TYPE perElemOpNonGqaSplitKStore(const in uint32_t r, const in uint32_t c, cons
     uint32_t global_row = i * Br + r;
     if (global_row < N && c < HSV) {
         uint32_t o_off = HSV * p.ne1
-            * (split_k_index + output_k_num * (global_row + p.ne2 * iq3));
+            * (split_k_index + p.k_num * (global_row + p.ne2 * iq3));
         data_o[o_off + iq2 * HSV + c] = D_TYPE(elem);
     }
     return elem;
@@ -161,8 +163,8 @@ D_TYPE perElemOpNonGqaSplitKStore(const in uint32_t r, const in uint32_t c, cons
 ACC_TYPE perElemOpNonGqaSplitKStoreCol0(const in uint32_t r, const in uint32_t c, const in ACC_TYPE elem, const in uint32_t lm_base, const in uint32_t iq2, const in uint32_t N) {
     uint32_t global_row = i * Br + r;
     if (global_row < N && c == 0) {
-        uint32_t lm_off = HSV * p.ne1 * output_k_num * p.ne2 * p.ne3
-            + p.ne1 * 2 * (split_k_index + output_k_num * (global_row + p.ne2 * iq3));
+        uint32_t lm_off = HSV * p.ne1 * p.k_num * p.ne2 * p.ne3
+            + p.ne1 * 2 * (split_k_index + p.k_num * (global_row + p.ne2 * iq3));
         data_o[lm_off + lm_base + iq2] = D_TYPE(elem);
     }
     return elem;
@@ -242,9 +244,9 @@ void main() {
     // mo_offset will point to the tile starting at row i*Br and col 0
     uint32_t mo_offset = mo_stride * i;
 
-    uint32_t m_offset = gqa_iq1*m_row_len * 2 /*sizeof(float16_t)*/;
+    uint32_t m_offset = gqa_iq1*KV * 2 /*sizeof(float16_t)*/;
     if (p.nem2 != 1 || p.nem3 != 1) {
-        m_offset += ((iq3 % p.nem3) * p.nem2 + (iq2 % p.nem2)) * p.nem1 * m_row_len * 2 /*sizeof(float16_t)*/;
+        m_offset += ((iq3 % p.nem3) * p.nem2 + (iq2 % p.nem2)) * p.nem1 * KV * 2 /*sizeof(float16_t)*/;
         mo_offset += ((iq3 % p.nem3) * p.nem2 + (iq2 % p.nem2)) * CEIL_DIV(p.nem1, Br) * mo_stride;
     }
 
@@ -268,7 +270,7 @@ void main() {
             }
             // Only load if the block is not all zeros
             if (mask_opt_bits != MASK_OPT_ALL_ZERO) {
-                bool nem1_bounds_check = !(gqa_ratio > 1) && (p.nem1 % Br) != 0;
+                bool nem1_bounds_check = !(p.gqa_ratio > 1) && (p.nem1 % Br) != 0;
 
                 if (nem1_bounds_check) {
                     tensorLayoutNV<2, gl_CooperativeMatrixClampModeConstantNV> tensorLayoutM = createTensorLayoutNV(2, gl_CooperativeMatrixClampModeConstantNV);
@@ -287,7 +289,7 @@ void main() {
                 } else {
                     tensorLayoutNV<2, Clamp> tensorLayoutM = createTensorLayoutNV(2, Clamp);
                     // Don't clamp against nem1 when GQA is enabled
-                    uint32_t m_height = gqa_ratio > 1 ? ~0 : p.nem1;
+                    uint32_t m_height = p.gqa_ratio > 1 ? ~0 : p.nem1;
                     tensorLayoutM = setTensorLayoutDimensionNV(tensorLayoutM, m_height, KV);
                     tensorLayoutM = setTensorLayoutStrideNV(tensorLayoutM, m_stride, 1);
 
@@ -406,15 +408,15 @@ void main() {
 
     // If there is split_k, then the split_k resolve shader does the final
     // division by L. Store the intermediate O value and per-row m and L values.
-    if (partial_output || split_k_num > 1) {
+    if (p.k_num > 1) {
         coopmat<D_TYPE, gl_ScopeWorkgroup, Br, HSV_pad, gl_MatrixUseAccumulator> O_D = coopmat<D_TYPE, gl_ScopeWorkgroup, Br, HSV_pad, gl_MatrixUseAccumulator>(O);
 
-        if (gqa_ratio > 1) {
+        if (p.gqa_ratio > 1) {
             // note: O and Q have swapped coord 1,2.
-            uint32_t o_offset = HSV * p.ne1 * (split_k_index + output_k_num * (gqa_iq1 + p.ne2 * iq3));
+            uint32_t o_offset = HSV * p.ne1 * (split_k_index + p.k_num * (gqa_iq1 + p.ne2 * iq3));
             coopMatPerElementNV(O_D, O_D, perElemOpGqaStore, o_offset, iq2, N);
 
-            o_offset = HSV * p.ne1 * output_k_num * p.ne2 * p.ne3 + p.ne1 * 2 * (split_k_index + output_k_num * (gqa_iq1 + p.ne2 * iq3));
+            o_offset = HSV * p.ne1 * p.k_num * p.ne2 * p.ne3 + p.ne1 * 2 * (split_k_index + p.k_num * (gqa_iq1 + p.ne2 * iq3));
             coopMatPerElementNV(L, L, perElemOpStoreCol0, o_offset, iq2, N);
             coopMatPerElementNV(M, M, perElemOpStoreCol0, o_offset + p.ne1, iq2, N);
         } else {
@@ -473,7 +475,7 @@ void main() {
 
     uint32_t o_offset = gqa_iq1*p.ne1*HSV + iq3*p.ne2*p.ne1*HSV;
 
-    if (gqa_ratio > 1) {
+    if (p.gqa_ratio > 1) {
         coopMatPerElementNV(O_D, O_D, perElemOpGqaStore, o_offset, iq2, N);
     } else {
         tensorLayoutNV<3, gl_CooperativeMatrixClampModeConstantNV> tensorLayoutD = createTensorLayoutNV(3, gl_CooperativeMatrixClampModeConstantNV);

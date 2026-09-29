@@ -116,6 +116,8 @@ enum llm_type {
     LLM_TYPE_17B_16E, // llama4 Scout
     LLM_TYPE_17B_128E, // llama4 Maverick
     LLM_TYPE_A13B,
+    LLM_TYPE_1B_A400M, // Granite3 MoE
+    LLM_TYPE_3B_A800M, // Granite3 MoE
     LLM_TYPE_7B_A1B,
     LLM_TYPE_8B_A1B, // lfm2moe
     LLM_TYPE_7_9B_A1_3B, // Ling-3.0-tiny
@@ -126,8 +128,10 @@ enum llm_type {
     LLM_TYPE_26B_A4B, // Gemma4
     LLM_TYPE_30B_A3B,
     LLM_TYPE_31B_A3_5B,
+    LLM_TYPE_32B_A9B, // Granite4 Hybrid
     LLM_TYPE_35B_A3B, // Qwen3.5
     LLM_TYPE_48B_A3B, // Kimi Linear
+    LLM_TYPE_75B_A9B, // Nemotron 3 Puzzle
     LLM_TYPE_80B_A3B, // Qwen3 Next
     LLM_TYPE_A3B,     // Qwen3.8 Flash Next
     LLM_TYPE_100B_A6B,
@@ -144,7 +148,6 @@ enum llm_type {
     LLM_TYPE_288B_A19B, // dots3-note
     LLM_TYPE_300B_A47B, // Ernie MoE big
     LLM_TYPE_310B_A15B, // /MiMo-V2-Flash
-    LLM_TYPE_314B_A13B, // Motif-3
     LLM_TYPE_355B_A32B, // GLM-4.5
     LLM_TYPE_397B_A17B, // Qwen3.5
     LLM_TYPE_685B_A37B, // DeepSeek V3.2
@@ -218,9 +221,6 @@ struct llama_layer_shortconv {
 };
 
 struct llama_layer_nextn {
-    struct ggml_tensor * hc_head_norm          = nullptr;
-    struct ggml_tensor * hc_head_down          = nullptr;
-    struct ggml_tensor * hc_head_up            = nullptr;
     struct ggml_tensor * eh_proj               = nullptr;
     struct ggml_tensor * eh_proj_s             = nullptr;
     struct ggml_tensor * eh_proj_in_s          = nullptr;
@@ -366,32 +366,7 @@ struct llama_layer {
     struct ggml_tensor * ffn_up_b   = nullptr; // b3
     struct ggml_tensor * ffn_act    = nullptr;
     struct ggml_tensor * ffn_exp_probs_b = nullptr;
-
-    // Motif-3
-    struct ggml_tensor * wq_b_gate         = nullptr;
-    struct ggml_tensor * attn_lambda       = nullptr;
-    struct ggml_tensor * ffn_poly_w        = nullptr;
-    struct ggml_tensor * ffn_poly_b        = nullptr;
-    struct ggml_tensor * ffn_poly_exps_w   = nullptr;
-    struct ggml_tensor * ffn_poly_exps_b   = nullptr;
-    struct ggml_tensor * ffn_poly_shexp_w  = nullptr;
-    struct ggml_tensor * ffn_poly_shexp_b  = nullptr;
-    struct ggml_tensor * mhc_attn_norm     = nullptr;
-    struct ggml_tensor * mhc_attn_pre      = nullptr;
-    struct ggml_tensor * mhc_attn_pre_b    = nullptr;
-    struct ggml_tensor * mhc_attn_post     = nullptr;
-    struct ggml_tensor * mhc_attn_post_b   = nullptr;
-    struct ggml_tensor * mhc_attn_res      = nullptr;
-    struct ggml_tensor * mhc_attn_res_b    = nullptr;
-    struct ggml_tensor * mhc_attn_alpha    = nullptr;
-    struct ggml_tensor * mhc_ffn_norm      = nullptr;
-    struct ggml_tensor * mhc_ffn_pre       = nullptr;
-    struct ggml_tensor * mhc_ffn_pre_b     = nullptr;
-    struct ggml_tensor * mhc_ffn_post      = nullptr;
-    struct ggml_tensor * mhc_ffn_post_b    = nullptr;
-    struct ggml_tensor * mhc_ffn_res       = nullptr;
-    struct ggml_tensor * mhc_ffn_res_b     = nullptr;
-    struct ggml_tensor * mhc_ffn_alpha     = nullptr;
+    struct ggml_tensor * ffn_exp_probs_b_vl = nullptr; // deepseek4 vision (bias for image tokens)
     struct ggml_tensor * ffn_gate_tid2eid = nullptr;
 
     struct ggml_tensor * dflash_attn_conv_base = nullptr;
@@ -774,10 +749,6 @@ struct llama_model {
 
     const struct ggml_tensor * get_tensor(const char * name) const;
 
-    void prefetch_rows(const struct ggml_tensor * t, const int32_t * rows, size_t n_rows) const;
-
-    virtual std::vector<const struct ggml_tensor *> gather_tables() const { return {}; }
-
     float get_rope_freq_base (const llama_cparams & cparams, int il) const;
     float get_rope_freq_scale(const llama_cparams & cparams, int il) const;
 
@@ -872,7 +843,7 @@ const char * llm_type_name(llm_type type);
     const int64_t n_token_types  = vocab.n_token_types();    GGML_UNUSED(n_token_types); \
     const int64_t n_rot          = hparams.n_rot();          GGML_UNUSED(n_rot); \
     const int64_t n_expert       = hparams.n_expert;         GGML_UNUSED(n_expert); \
-    const int64_t n_expert_used  = hparams.n_expert_used;    GGML_UNUSED(n_expert_used); \
+    const int64_t n_expert_used  = hparams.n_expert_used();  GGML_UNUSED(n_expert_used); \
     const int64_t n_ctx_train    = hparams.n_ctx_train;      GGML_UNUSED(n_ctx_train);
 
 // For internal test use

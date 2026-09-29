@@ -437,7 +437,6 @@ namespace GGUFMeta {
         return get_key(llm_kv(kid), result, required);
     }
 
-    template bool llama_model_loader::get_key<bool>       (const std::string & key, bool & result, bool required);
     template bool llama_model_loader::get_key<bool>       (enum llm_kv kid, bool & result,        bool required);
     template bool llama_model_loader::get_key<float>      (enum llm_kv kid, float & result,       bool required);
     template bool llama_model_loader::get_key<uint32_t>   (enum llm_kv kid, uint32_t & result,    bool required);
@@ -952,7 +951,7 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
         case GGML_OP_MUL_MAT_ID:
             {
                 // Used for either MoE expert routing or embedded adapter routing
-                const int n_ids_used = hparams.router_layer >= 0 ? 1 : hparams.n_expert_used;
+                const int n_ids_used = hparams.router_layer >= 0 ? 1 : hparams.n_expert_used_max();
                 GGML_ASSERT(n_ids_used > 0);
                 ggml_tensor * b = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, w->ne[0], n_ids_used, 512);
                 ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_ids_used, 512);
@@ -965,7 +964,7 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
             } break;
         case GGML_OP_ADD_ID:
             {
-                const int n_expert_used = hparams.n_expert_used;
+                const int n_expert_used = hparams.n_expert_used_max();
                 GGML_ASSERT(n_expert_used > 0);
                 ggml_tensor * a = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, w->ne[0], n_expert_used, 512);
                 ggml_tensor * c = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_expert_used, 512);
@@ -1086,7 +1085,7 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
 
     // do not lazy-read small tensors, it has significant overhead and is not worth it
     constexpr size_t auto_min_size = 4ull * 1024 * 1024 * 1024;
-    if (mode != LLAMA_LAZY_MODE_ON && ggml_nbytes(t) <= auto_min_size) {
+    if (mode == LLAMA_LAZY_MODE_AUTO && ggml_nbytes(t) <= auto_min_size) {
         return false;
     }
 
@@ -1498,7 +1497,6 @@ bool llama_model_loader::load_all_data(
     }
     GGML_ASSERT(size_data != 0 && "call init_mappings() first");
 
-    std::vector<no_init<uint8_t>> read_buf;
     std::vector<std::future<std::pair<ggml_tensor *, bool>>> validation_result;
 
     // 4 staging buffers for async uploads, each sized 1MB seems to be a good default for single NVMe drives.
@@ -1599,7 +1597,25 @@ bool llama_model_loader::load_all_data(
             ggml_backend_name(upload_backend));
     }
 
+    std::vector<ggml_tensor *> tensors;
     for (struct ggml_tensor * cur = ggml_get_first_tensor(ctx); cur != NULL; cur = ggml_get_next_tensor(ctx, cur)) {
+        tensors.push_back(cur);
+    }
+
+    // without mmap, tensors in non-host buffers are staged through a temporary buffer sized like the tensor
+    // load them biggest-first so the largest staging buffer is allocated while the fewest weights are resident
+    if (!use_mmap) {
+        std::stable_sort(tensors.begin(), tensors.end(), [](const ggml_tensor * a, const ggml_tensor * b) {
+            const bool staged_a = a->buffer && !ggml_backend_buffer_is_host(a->buffer);
+            const bool staged_b = b->buffer && !ggml_backend_buffer_is_host(b->buffer);
+            if (staged_a != staged_b) {
+                return staged_a;
+            }
+            return staged_a && ggml_nbytes(a) > ggml_nbytes(b);
+        });
+    }
+
+    for (struct ggml_tensor * cur : tensors) {
         const auto * weight = get_weight(ggml_get_name(cur));
         if (weight == nullptr) {
             // this can happen with split experts models
@@ -1644,20 +1660,7 @@ bool llama_model_loader::load_all_data(
                 mmap_used.first  = std::min(mmap_used.first,  weight->offs);
                 mmap_used.second = std::max(mmap_used.second, weight->offs + n_size);
             } else {
-                bool release_source = false;
-#if defined(__linux__)
-                auto * dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(cur->buffer));
-                release_source = !check_tensors && dev && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU &&
-                    strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)), "Vulkan") == 0;
-#endif
-                const size_t chunk_size = release_source ? 64 * 1024 * 1024 : n_size;
-                for (size_t offset = 0; offset < n_size; offset += chunk_size) {
-                    const size_t len = std::min(chunk_size, n_size - offset);
-                    ggml_backend_tensor_set(cur, data + offset, offset, len);
-                    if (release_source) {
-                        mapping->release_range(weight->offs + offset, len, files.at(weight->idx)->file_id());
-                    }
-                }
+                ggml_backend_tensor_set(cur, data, 0, n_size);
             }
         } else {
             const auto & file = files.at(weight->idx);
@@ -1725,7 +1728,8 @@ bool llama_model_loader::load_all_data(
                         buffer_idx %= n_buffers;
                     }
                 } else {
-                    read_buf.resize(n_size);
+                    // scoped to one tensor so only one staging buffer is alive at a time
+                    std::vector<no_init<uint8_t>> read_buf(n_size);
                     file->seek(weight->offs, SEEK_SET);
                     file->read_raw(read_buf.data(), n_size);
                     ggml_backend_tensor_set(cur, read_buf.data(), 0, n_size);

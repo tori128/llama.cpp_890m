@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdarg>
 #include <cstring>
+#include <cstdlib>
 #include <forward_list>
 #include <limits>
 #include <map>
@@ -318,10 +319,19 @@ struct llm_tokenizer_bpe : llm_tokenizer {
             case LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM:
             case LLAMA_VOCAB_PRE_TYPE_HUNYUAN_DENSE:
             case LLAMA_VOCAB_PRE_TYPE_JOYAI_LLM:
+            case LLAMA_VOCAB_PRE_TYPE_HY_V4:
                 regex_exprs = {
                     "\\p{N}{1,3}",
                     "[一-龥぀-ゟ゠-ヿ]+",
                     "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+",
+                };
+                break;
+            case LLAMA_VOCAB_PRE_TYPE_SPARK2_5:
+                regex_exprs = {
+                    "\\p{N}{1,3}",
+                    "[一-龥぀-ゟ゠-ヿ]+",
+                    "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+|[\r\n]|\\s+(?!\\S)|\\s+",
+                    "\\p{N}",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_YOUTU:
@@ -1949,30 +1959,6 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 id_to_token.resize(n_tokens);
             }
 
-            // models without a tokenizer can still declare special token ids (e.g. the mask token of a diffusion drafter)
-            const std::vector<std::pair<enum llm_kv, int32_t &>> special_token_types = {
-                { LLM_KV_TOKENIZER_BOS_ID,  special_bos_id  },
-                { LLM_KV_TOKENIZER_EOS_ID,  special_eos_id  },
-                { LLM_KV_TOKENIZER_UNK_ID,  special_unk_id  },
-                { LLM_KV_TOKENIZER_SEP_ID,  special_sep_id  },
-                { LLM_KV_TOKENIZER_PAD_ID,  special_pad_id  },
-                { LLM_KV_TOKENIZER_MASK_ID, special_mask_id },
-            };
-
-            for (const auto & it : special_token_types) {
-                int32_t & id = std::get<1>(it);
-
-                uint32_t new_id;
-                if (!ml.get_key(std::get<0>(it), new_id, false)) {
-                    continue;
-                }
-                if (new_id >= id_to_token.size()) {
-                    LLAMA_LOG_WARN("%s: bad special token: '%s' = %u, ignoring\n", __func__, kv(std::get<0>(it)).c_str(), new_id);
-                } else {
-                    id = new_id;
-                }
-            }
-
             return;
         }
 
@@ -2194,6 +2180,10 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM;
                 clean_spaces = false;
             } else if (
+                    tokenizer_pre == "spark2_5") {
+                pre_type = LLAMA_VOCAB_PRE_TYPE_SPARK2_5;
+                clean_spaces = false;
+            } else if (
                     tokenizer_pre == "youtu") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_YOUTU;
                 clean_spaces = false;
@@ -2373,6 +2363,10 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             } else if (
                 tokenizer_pre == "hunyuan-dense") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_HUNYUAN_DENSE;
+                clean_spaces = false;
+            } else if (
+                tokenizer_pre == "hy_v4") {
+                pre_type = LLAMA_VOCAB_PRE_TYPE_HY_V4;
                 clean_spaces = false;
             } else if (
                 tokenizer_pre == "joyai-llm") {
@@ -2678,7 +2672,6 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                         || t.first == "<|im_end|>"
                         || t.first == "<|end|>"
                         || t.first == "<end_of_turn>"
-                        || t.first == "<|endofturn|>" // Motif-3
                         || t.first == "<|endoftext|>"
                         || t.first == "<|end_of_text|>" // granite
                         || t.first == "<EOT>"
@@ -2879,7 +2872,6 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                     || t.first == "<|flush|>"  // solar-open
                     || t.first == "<|calls|>"  // solar-open
                     || t.first == "<end_of_turn>"
-                    || t.first == "<|endofturn|>" // Motif-3
                     || t.first == "<|endoftext|>"
                     || t.first == "</s>"      // paddleocr
                     || t.first == "<|eom_id|>"

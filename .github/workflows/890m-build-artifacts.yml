@@ -1,9 +1,8 @@
 name: Unified build artifacts
 
-# Build all public runtime variants after a push.  Hardware execution is
+# Build public runtime variants on an explicit request. Hardware execution is
 # validated locally; these artifacts verify compilation and provide binaries.
 on:
-  push:
   workflow_dispatch:
     inputs:
       release_tag:
@@ -44,23 +43,35 @@ jobs:
     name: Linux ROCm (gfx1150, gfx1151)
     needs: public-audit
     runs-on: ubuntu-24.04
-    container:
-      image: rocm/dev-ubuntu-24.04:7.2.4-complete
     steps:
       - uses: actions/checkout@v6
       - name: Install build tools
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends cmake ninja-build git ca-certificates
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build git ca-certificates python3-venv
+      - name: Install ROCm 10.0.0 build toolchain
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ "rocm[libraries,devel]==10.0.0"
+          ROCM_PATH="$(rocm-sdk path --root)"
+          CMAKE_PATH="$(rocm-sdk path --cmake)"
+          BIN_PATH="$(rocm-sdk path --bin)"
+          echo "ROCM_PATH=$ROCM_PATH" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$CMAKE_PATH" >> "$GITHUB_ENV"
+          echo "HIP_PATH=$ROCM_PATH" >> "$GITHUB_ENV"
+          echo "PATH=$BIN_PATH:$PATH" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$ROCM_PATH/lib" >> "$GITHUB_ENV"
+          echo "$(pwd)/.venv/bin" >> "$GITHUB_PATH"
       - name: Configure and build
         run: |
-          export PATH=/opt/rocm/bin:$PATH
           cmake -S . -B build-rocm -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_HIP=ON \
             '-DGPU_TARGETS=gfx1150;gfx1151' \
-            -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang \
-            -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
+            -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
+            -DHIP_PLATFORM=amd \
             -DLLAMA_BUILD_SERVER=ON \
             -DLLAMA_CURL=OFF \
             -DGGML_NATIVE=OFF \
@@ -70,7 +81,7 @@ jobs:
         run: |
           test -x build-rocm/bin/llama-server
           mkdir -p dist
-          printf 'commit: %s\nbuilt: %s\nplatform: Linux\nbackend: ROCm HIP\ntargets: gfx1150, gfx1151\nruntime: ROCm 7.2 or newer\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > build-rocm/bin/MANIFEST.txt
+          printf 'commit: %s\nbuilt: %s\nplatform: Linux\nbackend: ROCm HIP\ntargets: gfx1150, gfx1151\nruntime: ROCm 10.0.0\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > build-rocm/bin/MANIFEST.txt
           tar -C build-rocm/bin -czf dist/llama-unified-linux-rocm-gfx1150-gfx1151.tar.gz .
           ( cd dist && sha256sum *.tar.gz > SHA256SUMS-linux-rocm.txt )
       - uses: actions/upload-artifact@v6
@@ -305,13 +316,11 @@ jobs:
             release_assets+=(release-assets/BENCHMARK.md)
           fi
           release_notes=release-assets/RELEASE_NOTES.md
-          {
-            printf 'GitHub-hosted build artifacts for commit `%s`.\n' "$GITHUB_SHA"
-            printf '%s\n\n' 'Public-data audit and Linux/Windows Vulkan/ROCm builds succeeded.'
-            if [ -f release-assets/BENCHMARK.md ]; then
-              cat release-assets/BENCHMARK.md
-            fi
-          } > "$release_notes"
+          if [ -f release-assets/BENCHMARK.md ]; then
+            cp release-assets/BENCHMARK.md "$release_notes"
+          else
+            printf '# %s\n' "$release_title" > "$release_notes"
+          fi
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \

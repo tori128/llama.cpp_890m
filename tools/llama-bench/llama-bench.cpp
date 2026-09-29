@@ -28,36 +28,6 @@
 #include "llama.h"
 #include "log.h"
 
-#ifdef LLAMA_BENCH_ROCTX
-#include <rocprofiler-sdk-roctx/roctx.h>
-
-struct scoped_roctx_range {
-    explicit scoped_roctx_range(const char * name) {
-        roctxRangePush(name);
-    }
-
-    ~scoped_roctx_range() {
-        roctxRangePop();
-    }
-};
-
-struct scoped_roctx_profile {
-    scoped_roctx_profile() {
-        roctxProfilerResume(0);
-    }
-
-    ~scoped_roctx_profile() {
-        roctxProfilerPause(0);
-    }
-};
-#else
-struct scoped_roctx_range {
-    explicit scoped_roctx_range(const char *) {}
-};
-
-struct scoped_roctx_profile {};
-#endif
-
 #ifdef _WIN32
 #    define WIN32_LEAN_AND_MEAN
 #    ifndef NOMINMAX
@@ -309,6 +279,8 @@ static const char * lazy_mode_str(llama_lazy_mode mode) {
             return "auto";
         case LLAMA_LAZY_MODE_ON:
             return "on";
+        case LLAMA_LAZY_MODE_DIRECT:
+            return "on-direct";
         default:
             GGML_ABORT("invalid lazy mode");
     }
@@ -505,9 +477,7 @@ static void print_usage(int /* argc */, char ** argv) {
     printf("  -fa, --flash-attn <on|off|auto>                   (default: %s)\n", join(transform_to_str(cmd_params_defaults.flash_attn, llama_flash_attn_type_name), ",").c_str());
     printf("  -dev, --device <dev0/dev1/...>                    (default: auto)\n");
     printf("  -lm, --load-mode <auto|none|mmap|mlock|mmap+mlock|dio> (default: %s)\n", join(transform_to_str(cmd_params_defaults.load_mode, llama_load_mode_name), ",").c_str());
-    printf("  -lzm, --lazy-mode <on|auto|off>                   (default: %s)\n", join(transform_to_str(cmd_params_defaults.lazy_mode, lazy_mode_str), ",").c_str());
-    printf("  -mmp, --mmap <0|1>                                (DEPRECATED IN FAVOUR OF --load-mode)\n");
-    printf("  -dio, --direct-io <0|1>                           (DEPRECATED IN FAVOUR OF --load-mode)\n");
+    printf("  -lzm, --lazy-mode <on|on-direct|auto|off>          (default: %s)\n", join(transform_to_str(cmd_params_defaults.lazy_mode, lazy_mode_str), ",").c_str());
     printf("  -embd, --embeddings <0|1>                         (default: %s)\n", join(cmd_params_defaults.embeddings, ",").c_str());
     printf("  -ts, --tensor-split <ts0/ts1/..>                  (default: 0)\n");
     printf("  -ot --override-tensor <tensor name pattern>=<buffer type>;...\n");
@@ -844,6 +814,8 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
                     llama_lazy_mode mode;
                     if (m == "on") {
                         mode = LLAMA_LAZY_MODE_ON;
+                    } else if (m == "on-direct") {
+                        mode = LLAMA_LAZY_MODE_DIRECT;
                     } else if (m == "auto") {
                         mode = LLAMA_LAZY_MODE_AUTO;
                     } else if (m == "off") {
@@ -913,44 +885,6 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
                     break;
                 }
                 params.flash_attn.insert(params.flash_attn.end(), types.begin(), types.end());
-            } else if (arg == "-mmp" || arg == "--mmap") {
-                if (++i >= argc) {
-                    invalid_param = true;
-                    break;
-                }
-                LOG_WRN("DEPRECATED: -mmp and --mmap are deprecated in favour of --load-mode. Please use --load-mode mmap instead.\n");
-                auto p = string_split<bool>(argv[i], split_delim);
-
-                std::vector<llama_load_mode> modes;
-                for (const auto & m : p) {
-                    llama_load_mode mode;
-                    if (m) {
-                        mode = LLAMA_LOAD_MODE_MMAP;
-                    } else {
-                        mode = LLAMA_LOAD_MODE_NONE;
-                    }
-                    modes.push_back(mode);
-                }
-                params.load_mode.insert(params.load_mode.end(), modes.begin(), modes.end());
-            } else if (arg == "-dio" || arg == "--direct-io") {
-                if (++i >= argc) {
-                    invalid_param = true;
-                    break;
-                }
-                LOG_WRN("DEPRECATED: -dio and --direct-io are deprecated in favour of --load-mode. Please use --load-mode dio instead.\n");
-                auto p = string_split<bool>(argv[i], split_delim);
-
-                std::vector<llama_load_mode> modes;
-                for (const auto & m : p) {
-                    llama_load_mode mode;
-                    if (m) {
-                        mode = LLAMA_LOAD_MODE_DIRECT_IO;
-                    } else {
-                        mode = LLAMA_LOAD_MODE_NONE;
-                    }
-                    modes.push_back(mode);
-                }
-                params.load_mode.insert(params.load_mode.end(), modes.begin(), modes.end());
             } else if (arg == "-embd" || arg == "--embeddings") {
                 if (++i >= argc) {
                     invalid_param = true;
@@ -2393,10 +2327,7 @@ int llama_bench(int argc, char ** argv) {
                 llama_model_free(lmodel);
             }
 
-            {
-                scoped_roctx_range range("llama-bench/model-load");
-                lmodel = llama_model_load_from_file(inst.model.c_str(), mparams);
-            }
+            lmodel = llama_model_load_from_file(inst.model.c_str(), mparams);
             if (lmodel == NULL) {
                 fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
                 return 1;
@@ -2404,11 +2335,7 @@ int llama_bench(int argc, char ** argv) {
             prev_inst = &inst;
         }
 
-        llama_context * ctx;
-        {
-            scoped_roctx_range range("llama-bench/context-init");
-            ctx = llama_init_from_model(lmodel, cparams);
-        }
+        llama_context * ctx = llama_init_from_model(lmodel, cparams);
         if (ctx == NULL) {
             fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
             llama_model_free(lmodel);
@@ -2452,7 +2379,6 @@ int llama_bench(int argc, char ** argv) {
                     fprintf(stderr, "llama-bench: benchmark %d/%zu: warmup prompt run\n", params_idx, params_count);
                 }
                 //test_prompt(ctx, std::min(t.n_batch, std::min(t.n_prompt, 32)), 0, t.n_batch, t.n_threads);
-                scoped_roctx_range range("llama-bench/warmup-prompt");
                 bool res = test_prompt(ctx, t.n_prompt, t.n_batch, t.n_threads);
                 if (!res) {
                     fprintf(stderr, "%s: error: failed to run prompt warmup\n", __func__);
@@ -2465,7 +2391,6 @@ int llama_bench(int argc, char ** argv) {
                 if (params.progress) {
                     fprintf(stderr, "llama-bench: benchmark %d/%zu: warmup generation run\n", params_idx, params_count);
                 }
-                scoped_roctx_range range("llama-bench/warmup-generation");
                 bool res = test_gen(ctx, 1, t.n_threads);
                 if (!res) {
                     fprintf(stderr, "%s: error: failed to run gen warmup\n", __func__);
@@ -2484,7 +2409,6 @@ int llama_bench(int argc, char ** argv) {
 
                 if (is_cached) {
                     // if previously we have computed at this depth, just restore the state
-                    scoped_roctx_range range("llama-bench/depth-restore");
                     const size_t ret = llama_state_seq_set_data(ctx, cstate.buf.data(), cstate.buf.size(), 0);
                     if (ret == 0) {
                         // if the old state is incompatible with the current context - reprocess from scratch
@@ -2497,7 +2421,6 @@ int llama_bench(int argc, char ** argv) {
                         fprintf(stderr, "llama-bench: benchmark %d/%zu: depth run %d/%d\n", params_idx, params_count,
                                 i + 1, params.reps);
                     }
-                    scoped_roctx_range range("llama-bench/depth-compute");
                     bool res = test_prompt(ctx, t.n_depth, t.n_batch, t.n_threads);
                     if (!res) {
                         fprintf(stderr, "%s: error: failed to run depth\n", __func__);
@@ -2525,8 +2448,6 @@ int llama_bench(int argc, char ** argv) {
                     fprintf(stderr, "llama-bench: benchmark %d/%zu: prompt run %d/%d\n", params_idx, params_count,
                             i + 1, params.reps);
                 }
-                scoped_roctx_profile profile;
-                scoped_roctx_range range("llama-bench/prompt");
                 bool res = test_prompt(ctx, t.n_prompt, t.n_batch, t.n_threads);
                 if (!res) {
                     fprintf(stderr, "%s: error: failed to run prompt\n", __func__);
@@ -2540,7 +2461,6 @@ int llama_bench(int argc, char ** argv) {
                     fprintf(stderr, "llama-bench: benchmark %d/%zu: generation run %d/%d\n", params_idx, params_count,
                             i + 1, params.reps);
                 }
-                scoped_roctx_range range("llama-bench/generation");
                 bool res = test_gen(ctx, t.n_gen, t.n_threads);
                 if (!res) {
                     fprintf(stderr, "%s: error: failed to run gen\n", __func__);

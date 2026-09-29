@@ -75,17 +75,42 @@ public:
 
     llama_kv_cache * get_mem_idx() const;   // nullptr when the model carries no indexer
 
+    llama_kv_cache * get_mem_pool() const;
+
+    uint32_t qsa_pool_n_recomp(uint32_t ratio, uint32_t n_tokens, uint32_t n_kv, uint32_t n_pad_kv) const;
+
+    void qsa_pool_invalidate() const;
+    void qsa_pool_invalidate_from(llama_pos p0) const;
+    void qsa_pool_validate(uint32_t n_pos) const;
+
     // block-compressed sparse attention (qwen4exp QSA) over the cells of the indexer cache.
     // Blocks cut the position line, not the cell array, so no caller assumes a contiguous layout:
-    //   cell_blk  I32 [n_kv, ns]           block each cell belongs to
-    //   blk_cells I32 [ratio*n_blocks, ns] cells making up each block
+    //   cell_blk  I32 [n_kv, ns]           block each cell belongs to, null for block top-k
+    //   blk_cells I32 [ratio*n_blocks, ns] cells making up each block for key pooling
+    //   blk_select_cells I32 [ratio*n_blocks, ns] complete blocks, n_kv sentinel otherwise
+    //   tail_cells I32 [ratio-1, n_tokens/ns, ns] incomplete tail, n_kv sentinel padding
+    //   tail_mask F32 [ratio-1, n_tokens/ns, ns] zero for real tail rows, -inf for padding
     //   blk_pos   I32 [4*n_blocks*ns]      mrope position rows of each block's first token
     //   bias      F32 [n_kv, n_tokens/ns, ns] -inf where invisible, large where always visible
     // blk_bias asks for the bias per block instead: [n_blocks, n_tokens/ns, ns]
-    // the caller then adds the attention mask, the only part of the bias that varies within a block
-    void set_input_qsa(ggml_tensor * cell_blk, ggml_tensor * blk_cells, ggml_tensor * blk_pos,
-                       ggml_tensor * bias, const llama_ubatch * ubatch, uint32_t ratio,
-                       bool blk_bias) const;
+    // the caller then adds the attention mask, the only part of the bias that varies within a block.
+    void set_input_qsa(
+            ggml_tensor * cell_blk,
+            ggml_tensor * blk_cells,
+            ggml_tensor * blk_select_cells,
+            ggml_tensor * tail_cells,
+            ggml_tensor * tail_mask,
+            ggml_tensor * blk_pos,
+            ggml_tensor * bias,
+            ggml_tensor * pool_idxs,
+            ggml_tensor * pool_cells,
+            ggml_tensor * pool_pos,
+            int64_t n_kv,
+            const llama_ubatch * ubatch,
+            uint32_t ratio,
+            bool blk_bias,
+            bool block_topk,
+            bool direct_gather) const;
 
 private:
     // forget seq_id (all of it if seq_id < 0) in every cache at once, so a failed restore cannot leave the caches out of step
@@ -97,6 +122,17 @@ private:
     llama_hparams hparams_idx;
 
     const std::unique_ptr<llama_kv_cache> mem_idx;
+
+    llama_hparams hparams_pool;
+    const std::unique_ptr<llama_kv_cache> mem_pool;
+    mutable uint32_t pool_valid_pos = 0;
+
+    // the pooled rows are addressed by block index, and set_input_qsa numbers blocks
+    // bucket-major across the sequence groups of a stream. With two sequences in one
+    // (unified) stream a block gained by either shifts every later index, and the shorter
+    // sequence's tail blocks sit mid-table where the recompute window cannot reach them.
+    // So the cache is only trusted while a single sequence is present in the stream.
+    bool qsa_pool_one_seq() const;
 };
 
 class llama_memory_hybrid_idx_context : public llama_memory_hybrid_context {
@@ -141,9 +177,25 @@ public:
     // streams in the current slot info, the `ns` of get_k/get_v; 1 if unified
     uint32_t get_n_stream() const;
 
-    void set_input_qsa(ggml_tensor * cell_blk, ggml_tensor * blk_cells, ggml_tensor * blk_pos,
-                       ggml_tensor * bias, const llama_ubatch * ubatch, uint32_t ratio,
-                       bool blk_bias) const;
+    llama_kv_cache * get_mem_pool() const;
+    uint32_t qsa_pool_n_recomp(uint32_t ratio, uint32_t n_tokens, uint32_t n_kv, uint32_t n_pad_kv) const;
+
+    void set_input_qsa(
+            ggml_tensor * cell_blk,
+            ggml_tensor * blk_cells,
+            ggml_tensor * blk_select_cells,
+            ggml_tensor * tail_cells,
+            ggml_tensor * tail_mask,
+            ggml_tensor * blk_pos,
+            ggml_tensor * bias,
+            ggml_tensor * pool_idxs,
+            ggml_tensor * pool_cells,
+            ggml_tensor * pool_pos,
+            const llama_ubatch * ubatch,
+            uint32_t ratio,
+            bool blk_bias,
+            bool block_topk,
+            bool direct_gather) const;
 
 private:
     const llama_memory_hybrid_idx * mem = nullptr;

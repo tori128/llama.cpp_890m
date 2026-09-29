@@ -13,7 +13,7 @@
 [![Docker](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/docker.yml?label=Docker)](https://github.com/ggml-org/llama.cpp/actions/workflows/docker.yml)
 [![Winget](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/winget.yml?label=Winget)](https://github.com/ggml-org/llama.cpp/actions/workflows/winget.yml)
 
-[ggml](https://github.com/ggml-org/ggml) / [ops](https://github.com/ggml-org/llama.cpp/blob/master/docs/ops.md) / [maintainer PRs](https://github.com/ggml-org/llama.cpp/issues?q=is%3Apr%20is%3Aopen%20draft%3AFalse%20(author%3Argerganov%20OR%20author%3AKitaitiMakoto%20OR%20author%3Adanbev%20OR%20author%3Aaldehir%20OR%20author%3Amax-krasnyansky%20OR%20author%3ACISC%20OR%20author%3Aggerganov%20OR%20author%3Aam17an%20OR%20author%3Abartowski1182%20OR%20author%3Anikwen%20OR%20author%3Ahipudding%20OR%20author%3AServeurpersoCom%20OR%20author%3Apwilkin%20OR%20author%3Areeselevine%20OR%20author%3Angxson%20OR%20author%3Ajeffbolznv%20OR%20author%3Amarty1885%20OR%20author%3A0cc4m%20OR%20author%3ATitaniumtown%20OR%20author%3Aangt%20OR%20author%3AIMbackK%20OR%20author%3Aarthw%20OR%20author%3AJohannesGaessler%20OR%20author%3AORippler%20OR%20author%3Aruixiang63%20OR%20author%3Axctan%20OR%20author%3Aallozaur%20OR%20author%3Ayomaytk%20OR%20author%3Aaendk%20OR%20author%3Agaugarg-nv%20OR%20author%3Ataronaeo%20OR%20author%3Aforforever73%20OR%20author%3Alhez%20OR%20author%3Anetrunnereve%20OR%20author%3Afairydreaming)%20sort%3Aupdated-desc) / [dev stats](https://github.com/ggml-org/llama.cpp-dev) / [lib llama API](https://github.com/ggml-org/llama.cpp/issues/9289) / [llama-server REST API](https://github.com/ggml-org/llama.cpp/issues/9291)
+[ggml](https://github.com/ggml-org/ggml) / [ops](https://github.com/ggml-org/llama.cpp/blob/master/docs/ops.md) / [maintainer PRs](https://github.com/ggml-org/llama.cpp/issues?q=is%3Apr%20is%3Aopen%20draft%3AFalse%20(author%3Argerganov%20OR%20author%3AKitaitiMakoto%20OR%20author%3Adanbev%20OR%20author%3Aaldehir%20OR%20author%3Amax-krasnyansky%20OR%20author%3ACISC%20OR%20author%3Aggerganov%20OR%20author%3Aam17an%20OR%20author%3Ajhen0409%20OR%20author%3Abartowski1182%20OR%20author%3Anikwen%20OR%20author%3Ahipudding%20OR%20author%3Aravi9%20OR%20author%3AServeurpersoCom%20OR%20author%3Apwilkin%20OR%20author%3Areeselevine%20OR%20author%3Angxson%20OR%20author%3Ajeffbolznv%20OR%20author%3Amarty1885%20OR%20author%3A0cc4m%20OR%20author%3ATitaniumtown%20OR%20author%3Aangt%20OR%20author%3AIMbackK%20OR%20author%3Aarthw%20OR%20author%3AJohannesGaessler%20OR%20author%3AORippler%20OR%20author%3Aruixiang63%20OR%20author%3Axctan%20OR%20author%3Aallozaur%20OR%20author%3Ayomaytk%20OR%20author%3Aaendk%20OR%20author%3Awine99%20OR%20author%3Agaugarg-nv%20OR%20author%3Ataronaeo%20OR%20author%3Aforforever73%20OR%20author%3Alhez%20OR%20author%3Anetrunnereve%20OR%20author%3Afairydreaming)%20sort%3Aupdated-desc) / [dev stats](https://github.com/ggml-org/llama.cpp-dev) / [lib llama API](https://github.com/ggml-org/llama.cpp/issues/9289) / [llama-server REST API](https://github.com/ggml-org/llama.cpp/issues/9291)
 
 </div>
 
@@ -49,87 +49,6 @@ llama serve -hf ggml-org/Qwen3.5-0.8B-GGUF
     </tr>
 <table>
 
-## Flash-Next Vulkan profile (this fork)
-
-This profile is for Qwen3.8 Flash-Next Q2_K_XL and its shared Q4_K_M MTP
-draft. Keep all three target GGUF shards in one directory, and pass
-`...-00001-of-00003.gguf` to `--model`.
-
-The values below describe this branch's Linux Vulkan shortcut for an
-AMD Ryzen AI 9 HX 370. `--threads` and
-`LLAMA_QSA_GATHER=16384` are hardware-specific tuning values; measure them
-before using them on another system.
-
-### Linux Vulkan
-
-Run this from the unpacked Linux Vulkan release directory. Replace the three
-path variables with local paths.
-
-```sh
-release_dir=/path/to/llama-unified-linux-vulkan
-model=/path/to/Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf
-draft=/path/to/mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf
-
-export LD_LIBRARY_PATH="$release_dir"
-export LLAMA_ATTN_ROT_DISABLE=1
-export LLAMA_QSA_GATHER=16384
-
-"$release_dir/llama-server" \
-  --model "$model" \
-  --gpu-layers 99 --flash-attn on \
-  --fit off \
-  --ctx-size 100000 --parallel 1 --threads 10 \
-  --cache-ram 2048 --ctx-checkpoints 4 \
-  --cache-type-k q8_0 --cache-type-v q8_0 --kv-unified \
-  --reasoning on --reasoning-effort low --reasoning-preserve \
-  --temp 1.0 --top-k 20 --min-p 0.0 \
-  --alias qwen3.8-flash-next --metrics --host 0.0.0.0 --port 1234 \
-  --spec-type draft-mtp,ngram-mod --spec-draft-model "$draft" \
-  --spec-draft-p-min 0.75 \
-  --spec-draft-ngl all --spec-draft-type-k q8_0 --spec-draft-type-v q8_0
-```
-
-### Windows Vulkan (PowerShell)
-
-Extract the Windows Vulkan archive and retain its DLLs beside
-`llama-server.exe`. `LD_LIBRARY_PATH` is Linux-only.
-
-```powershell
-$releaseDir = 'C:\path\to\llama-unified-windows-vulkan'
-$model = 'C:\path\to\Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf'
-$draft = 'C:\path\to\mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf'
-
-$env:LLAMA_ATTN_ROT_DISABLE = '1'
-$env:LLAMA_QSA_GATHER = '16384'
-
-& "$releaseDir\llama-server.exe" `
-  --model "$model" `
-  --gpu-layers 99 --flash-attn on `
-  --fit off `
-  --ctx-size 100000 --parallel 1 --threads 10 `
-  --cache-ram 2048 --ctx-checkpoints 4 `
-  --cache-type-k q8_0 --cache-type-v q8_0 --kv-unified `
-  --reasoning on --reasoning-effort low --reasoning-preserve `
-  --temp 1.0 --top-k 20 --min-p 0.0 `
-  --alias qwen3.8-flash-next --metrics --host 0.0.0.0 --port 1234 `
-  --spec-type draft-mtp,ngram-mod --spec-draft-model "$draft" `
-  --spec-draft-p-min 0.75 `
-  --spec-draft-ngl all --spec-draft-type-k q8_0 --spec-draft-type-v q8_0
-```
-
-> [!WARNING]
-> Windows supports this Flash-Next MTP and `ngram-mod` profile, but
-> the default loading mode uses memory-mapped I/O, not direct SSD I/O. This fork does
-> not explicitly release GPU-uploaded source-mapping pages or accessed PLE
-> pages on Windows, so system-memory use can grow during inference.
-> Leave sufficient system and shared-GPU memory headroom for long
-> contexts.
-
-On Linux Vulkan integrated GPUs, this fork explicitly releases source-mapping
-pages after GPU upload. Sparse PLE mappings receive random-access advice
-automatically, with row prefetch during inference. This does not provide a
-Windows memory-residency limit.
-
 ## Description
 
 The main goal of `llama.cpp` is to enable LLM (and VLM) inference with minimal setup and state-of-the-art performance on
@@ -155,7 +74,7 @@ The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-or
 | [CANN](docs/build.md#cann) | Ascend NPU |
 | [CUDA](docs/build.md#cuda) | Nvidia GPU |
 | [HIP](docs/build.md#hip) | AMD GPU |
-| [Hexagon [In Progress]](docs/backend/snapdragon/README.md) | Snapdragon |
+| [Hexagon](docs/backend/snapdragon/README.md) | Snapdragon |
 | [IBM zDNN](docs/backend/zDNN.md) | IBM Z & LinuxONE |
 | [MUSA](docs/build.md#musa) | Moore Threads GPU |
 | [Metal](docs/build.md#metal-build) | Apple Silicon |

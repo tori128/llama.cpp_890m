@@ -6,7 +6,6 @@
 #include "llama-context.h"
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -99,6 +98,11 @@ llama_kv_cache::llama_kv_cache(
     }
 
     GGML_ASSERT(kv_size % n_pad == 0);
+
+    if (other) {
+        // our rows go stale exactly when the owner frees a cell: let it zero them with its own
+        other->sharers.push_back(this);
+    }
 
     const uint32_t n_layer = hparams.n_layer_all;
 
@@ -368,6 +372,15 @@ llama_kv_cache::llama_kv_cache(
 }
 
 void llama_kv_cache::clear(bool data) {
+    if (!other) {
+        // every cell becomes free: wipe the rows that were ever written (the sharers' rows too,
+        // their own clear() may not run, and a buffer clear below only covers our buffers)
+        rows_hw_init();
+        for (uint32_t s = 0; s < n_stream; ++s) {
+            zero_rows(s, 0, rows_hw[s]);
+            rows_hw[s] = 0;
+        }
+    }
     for (uint32_t s = 0; s < n_stream; ++s) {
         v_cells[s].reset();
         v_heads[s] = 0;
@@ -403,6 +416,8 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
 
         uint32_t new_head = cells.size();
 
+        std::vector<uint32_t> freed;
+
         for (uint32_t i = 0; i < cells.size(); ++i) {
             if (!cells.pos_in(i, p0, p1)) {
                 continue;
@@ -412,8 +427,12 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
                 if (new_head == cells.size()) {
                     new_head = i;
                 }
+
+                freed.push_back(i);
             }
         }
+
+        zero_idxs(seq_to_stream[seq_id], freed);
 
         // If we freed up a slot, set head to it so searching can start there.
         if (new_head != cells.size() && new_head < head) {
@@ -427,6 +446,8 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
 
             uint32_t new_head = cells.size();
 
+            std::vector<uint32_t> freed;
+
             for (uint32_t i = 0; i < cells.size(); ++i) {
                 if (!cells.pos_in(i, p0, p1)) {
                     continue;
@@ -437,7 +458,11 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
                 if (new_head == cells.size()) {
                     new_head = i;
                 }
+
+                freed.push_back(i);
             }
+
+            zero_idxs(s, freed);
 
             // If we freed up a slot, set head to it so searching can start there.
             if (new_head != cells.size() && new_head < head) {
@@ -554,13 +579,19 @@ void llama_kv_cache::seq_keep(llama_seq_id seq_id) {
 
     uint32_t new_head = cells.size();
 
+    std::vector<uint32_t> freed;
+
     for (uint32_t i = 0; i < cells.size(); ++i) {
         if (cells.seq_keep(i, seq_id)) {
             if (new_head == cells.size()) {
                 new_head = i;
             }
+
+            freed.push_back(i);
         }
     }
+
+    zero_idxs(seq_to_stream[seq_id], freed);
 
     // If we freed up a slot, set head to it so searching can start there.
     if (new_head != cells.size() && new_head < head) {
@@ -840,6 +871,10 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
             assert(sdst < n_stream);
 
             LLAMA_LOG_DEBUG("%s: copying KV buffer: stream %d to stream %d\n", __func__, ssrc, sdst);
+
+            // the whole stream is copied, rows above the source high-water mark included
+            rows_hw_init();
+            rows_hw[sdst] = rows_hw[ssrc];
 
             assert(ssrc != sdst);
 
@@ -1184,6 +1219,15 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & 
 
         head = sinfo.idxs[s].back() + 1;
     }
+
+    // rows at or above the highest used cell are zero (buffer clear at construction, zero_rows
+    // on every free); remember the written extent so clear() only wipes what it has to
+    rows_hw_init();
+    for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
+        const uint32_t strm = sinfo.strm[s];
+
+        rows_hw[strm] = std::max(rows_hw[strm], v_cells[strm].used_max_p1());
+    }
 }
 
 bool llama_kv_cache::get_can_shift() const {
@@ -1314,6 +1358,74 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
             ggml_row_size(v->type, kv_size),                        // v->nb[2]
             ggml_row_size(v->type, kv_size*n_embd_v_gqa),           // v->nb[3]
             ggml_row_size(v->type, kv_size*n_embd_v_gqa)*sinfo.s0);
+}
+
+llama_kv_cache::~llama_kv_cache() {
+    if (other) {
+        auto & v = other->sharers;
+        v.erase(std::remove(v.begin(), v.end(), this), v.end());
+    }
+    for (auto * c : sharers) {
+        c->other = nullptr;
+    }
+}
+
+void llama_kv_cache::rows_hw_init() {
+    if (rows_hw.size() != n_stream) {
+        rows_hw.assign(n_stream, 0);
+    }
+}
+
+void llama_kv_cache::zero_rows(uint32_t strm, uint32_t r0, uint32_t r1) {
+    r1 = std::min(r1, get_size());
+
+    if (r0 >= r1) {
+        return;
+    }
+
+    const auto zero = [strm, r0, r1](const llama_kv_cache * c) {
+        for (const auto & layer : c->layers) {
+            // V stored column-major (no flash attention) has no contiguous rows to wipe; that
+            // path does not go through the WMMA accumulate the zeroing is for
+            for (ggml_tensor * t : { layer.k, c->v_trans ? nullptr : layer.v }) {
+                if (!t || !t->buffer) {
+                    continue;
+                }
+
+                const size_t offset = (size_t) strm*t->nb[2] + (size_t) r0*t->nb[1];
+                const size_t size   = (size_t) (r1 - r0)*t->nb[1];
+
+                if (offset + size > ggml_nbytes(t)) {
+                    continue;
+                }
+
+                // a host memset on UMA, a fill command elsewhere; never a graph node, so graph
+                // reuse cannot replay it with stale offsets
+                ggml_backend_tensor_memset(t, 0, offset, size);
+            }
+        }
+    };
+
+    zero(this);
+
+    for (const auto * c : sharers) {
+        zero(c);
+    }
+}
+
+void llama_kv_cache::zero_idxs(uint32_t strm, const std::vector<uint32_t> & idxs) {
+    // coalesce runs of consecutive cells into one memset each
+    size_t i = 0;
+    while (i < idxs.size()) {
+        size_t j = i;
+        while (j + 1 < idxs.size() && idxs[j + 1] == idxs[j] + 1) {
+            ++j;
+        }
+
+        zero_rows(strm, idxs[i], idxs[j] + 1);
+
+        i = j + 1;
+    }
 }
 
 ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const {
@@ -1682,7 +1794,9 @@ static void set_input_kq_mask_impl(const args_set_input_kq_mask & args, T * data
 
                 // apply SWA if any
                 if (swa) {
-                    if (llama_hparams::is_masked_swa(n_swa, swa_type, p0, p1)) {
+                    // see llama_non_causal_type
+                    const bool in_span = !causal && args.hparams.non_causal_type == LLAMA_NON_CAUSAL_TYPE_SWA_FULL && p0 >= seq_pos_min[seq_id];
+                    if (!in_span && llama_hparams::is_masked_swa(n_swa, swa_type, p0, p1)) {
                         goto skip;
                     }
                 }
@@ -1752,6 +1866,12 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
 
     // n_tps == n_tokens_per_stream
     const int64_t n_tps = n_tokens/n_stream;
+
+    // see llama_non_causal_type
+    // only the SWA cache (or the SWA layers of a single cache) become non-causal
+    if (!causal_attn && hparams.non_causal_type == LLAMA_NON_CAUSAL_TYPE_SWA_ONLY) {
+        causal_attn = swa_type == LLAMA_SWA_TYPE_NONE;
+    }
 
     //const int64_t t_start = ggml_time_us();
 
@@ -1836,58 +1956,10 @@ void llama_kv_cache::get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, st
         return;
     }
 
-    // note: apply_ubatch() has already stored the current ubatch
-    //       the window below thus covers tokens of this very ubatch as well, which is what we want
-    llama_pos p_min = std::numeric_limits<llama_pos>::max();
-    llama_pos p_max = std::numeric_limits<llama_pos>::min();
-
-    std::bitset<LLAMA_MAX_SEQ> seqs;
-
-    for (uint32_t i = 0; i < n_tokens; ++i) {
-        p_min = std::min(p_min, ubatch.pos[i]);
-        p_max = std::max(p_max, ubatch.pos[i]);
-    }
-
-    for (uint32_t s = 0; s < ubatch.n_seqs_unq; ++s) {
-        seqs.set(ubatch.seq_id_unq[s]);
-    }
-
-    const llama_pos w0 = p_min - (llama_pos) n;
-
-    // (seq_id, pos) -> token, for every cell that could be a predecessor of a ubatch token
-    std::unordered_map<uint64_t, llama_token> hist;
-
-    const auto key = [](llama_seq_id seq_id, llama_pos pos) {
-        return ((uint64_t) seq_id << 32) | (uint32_t) pos;
-    };
-
-    // handle M-RoPE gaps: multiple tokens share the same temporal pos
-    // TODO @ngxson : improve this in the future
-    std::array<std::pair<llama_pos, llama_token>, LLAMA_MAX_SEQ> below;
-    below.fill({ -1, LLAMA_TOKEN_NULL });
-
-    for (uint32_t s = 0; s < n_stream; ++s) {
-        // p_max inclusive: an embd token looks up cells at its own (shared) position
-        v_cells[s].for_each_token_in(seqs, 0, p_max + 1,
-            [&](llama_seq_id seq_id, llama_pos pos, llama_token tok) {
-                if (pos >= w0) {
-                    hist[key(seq_id, pos)] = tok;
-                } else if (pos > below[seq_id].first) {
-                    below[seq_id] = { pos, tok };
-                }
-            });
-    }
-
-    // the token at pos p, or the nearest earlier one when p falls in an M-RoPE gap
-    const auto lookup = [&](llama_seq_id seq_id, llama_pos p) -> llama_token {
-        for (llama_pos q = p; q >= w0; --q) {
-            const auto it = hist.find(key(seq_id, q));
-            if (it != hist.end()) {
-                return it->second;
-            }
-        }
-        return below[seq_id].second;
-    };
+    // note: apply_ubatch() has already stored the current ubatch, so the cells cover the tokens
+    //       of this very ubatch as well, which is what we want
+    // the nearest cell at or before a position also resolves M-RoPE gaps, where multiple tokens
+    // share the same temporal pos
 
     // an embd (multimodal) ubatch can repeat one position for a whole image, so positions
     // do not encode the token order; resolve its predecessors by ubatch order instead
@@ -1925,7 +1997,7 @@ void llama_kv_cache::get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, st
                 continue;
             }
 
-            res[i*n + j] = lookup(seq_id, p);
+            res[i*n + j] = v_cells[seq_to_stream[seq_id]].seq_pos_tok_le(seq_id, p);
         }
     }
 }
