@@ -5,6 +5,14 @@
 #include "fattn-vec.cuh"
 #include "fattn.cuh"
 
+bool ggml_cuda_fattn_tile_quantized_enabled() {
+    static const bool enabled = [] {
+        const char * value = getenv("GGML_CUDA_FATTN_TILE_QUANTIZED");
+        return value && strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 __launch_bounds__(256, 1)
 static __global__ void flash_attn_mask_to_sparse_indices(
@@ -679,6 +687,13 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                 }
             }
         } else {
+            // Reuse each dequantized KV tile across the grouped Q heads.
+            const bool tile_has_kv_type = K->type == V->type &&
+                (K->type == GGML_TYPE_Q8_0 || K->type == GGML_TYPE_Q4_0) &&
+                (K->ne[0] == 64 || K->ne[0] == 128 || K->ne[0] == 256) && V->ne[0] == K->ne[0];
+            if (gqa_opt_applies && tile_has_kv_type && ggml_cuda_fattn_tile_quantized_enabled()) {
+                return BEST_FATTN_KERNEL_TILE;
+            }
             if (Q->ne[1] <= 2) {
                 return BEST_FATTN_KERNEL_VEC;
             }

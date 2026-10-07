@@ -752,11 +752,36 @@ static void * ggml_backend_cuda_buffer_get_base(ggml_backend_buffer_t buffer) {
     return ctx->dev_ptr;
 }
 
+static bool ggml_cuda_should_pad_weight(const ggml_tensor * tensor) {
+    static const bool enabled = getenv("GGML_CUDA_NO_PAD_WEIGHTS") == nullptr;
+    if (!enabled || tensor->view_src != nullptr || !(tensor->flags & GGML_TENSOR_FLAG_PAD_ROWS)
+            || ggml_is_quantized(tensor->type) || tensor->ne[1] <= 1) {
+        return false;
+    }
+    return ggml_row_size(tensor->type, tensor->ne[0]) % 2048 == 0;
+}
+
+static size_t ggml_cuda_padded_nb1(const ggml_tensor * tensor) {
+    return ggml_row_size(tensor->type, tensor->ne[0]) + 128;
+}
+
 static enum ggml_status ggml_backend_cuda_buffer_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
 
     if (tensor->view_src != NULL) {
         assert(tensor->view_src->buffer->buft == buffer->buft);
+        return GGML_STATUS_SUCCESS;
+    }
+
+    if (ggml_backend_buffer_get_usage(buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE
+            && ggml_cuda_should_pad_weight(tensor)) {
+        tensor->nb[1] = ggml_cuda_padded_nb1(tensor);
+        tensor->nb[2] = tensor->nb[1] * tensor->ne[1];
+        tensor->nb[3] = tensor->nb[2] * tensor->ne[2];
+        ggml_cuda_set_device(ctx->device);
+        CUDA_CHECK(cudaMemsetAsync(tensor->data, 0,
+            ggml_backend_buft_get_alloc_size(buffer->buft, tensor), cudaStreamPerThread));
+        CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
         return GGML_STATUS_SUCCESS;
     }
 
@@ -921,6 +946,10 @@ static size_t ggml_backend_cuda_buffer_type_get_alloc_size(ggml_backend_buffer_t
         }
     }
 
+    if (ggml_cuda_should_pad_weight(tensor)) {
+        const size_t nrows = tensor->ne[1] * tensor->ne[2] * tensor->ne[3];
+        size = std::max(size, ggml_cuda_padded_nb1(tensor) * nrows);
+    }
     return size;
 }
 

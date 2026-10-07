@@ -69,6 +69,9 @@ for head_size_kq in HEAD_SIZES_KQ:
     head_size_v = HEAD_SIZES_V_OVERRIDE.get(head_size_kq, head_size_kq)
     with open(f"fattn-tile-instance-dkq{head_size_kq}-dv{head_size_v}.cu", "w") as f:
         f.write(SOURCE_FATTN_TILE.format(head_size_kq=head_size_kq, head_size_v=head_size_v))
+        if head_size_kq in (64, 128, 256):
+            for type_kv in ("GGML_TYPE_Q4_0", "GGML_TYPE_Q8_0"):
+                f.write(f"DECL_FATTN_TILE_CASE_Q({head_size_kq}, {head_size_v}, {type_kv}, {type_kv});\n")
 
 for type_k in TYPES_KV:
     for type_v in TYPES_KV:

@@ -1,9 +1,11 @@
 #include "common.cuh"
 #include "fattn-tile.cuh"
+#include "fattn.cuh"
 
 void ggml_cuda_flash_attn_ext_tile(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * K = dst->src[1];
     const ggml_tensor * V = dst->src[2];
+    const bool use_quantized_kv = ggml_cuda_fattn_tile_quantized_enabled();
     switch (K->ne[0]) {
         case  40: {
             GGML_ASSERT(V->ne[0] == K->ne[0]);
@@ -11,7 +13,13 @@ void ggml_cuda_flash_attn_ext_tile(ggml_backend_cuda_context & ctx, ggml_tensor 
         } break;
         case  64: {
             GGML_ASSERT(V->ne[0] == K->ne[0]);
-            ggml_cuda_flash_attn_ext_tile_case< 64,  64>(ctx, dst);
+            if (use_quantized_kv && K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q8_0) {
+                ggml_cuda_flash_attn_ext_tile_case< 64,  64, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>(ctx, dst);
+            } else if (use_quantized_kv && K->type == GGML_TYPE_Q4_0 && V->type == GGML_TYPE_Q4_0) {
+                ggml_cuda_flash_attn_ext_tile_case< 64,  64, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0>(ctx, dst);
+            } else {
+                ggml_cuda_flash_attn_ext_tile_case< 64,  64>(ctx, dst);
+            }
         } break;
         case  72: {
             GGML_ASSERT(V->ne[0] == K->ne[0]);
@@ -31,7 +39,13 @@ void ggml_cuda_flash_attn_ext_tile(ggml_backend_cuda_context & ctx, ggml_tensor 
         } break;
         case 128: {
             GGML_ASSERT(V->ne[0] == K->ne[0]);
-            ggml_cuda_flash_attn_ext_tile_case<128, 128>(ctx, dst);
+            if (use_quantized_kv && K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q8_0) {
+                ggml_cuda_flash_attn_ext_tile_case<128, 128, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>(ctx, dst);
+            } else if (use_quantized_kv && K->type == GGML_TYPE_Q4_0 && V->type == GGML_TYPE_Q4_0) {
+                ggml_cuda_flash_attn_ext_tile_case<128, 128, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0>(ctx, dst);
+            } else {
+                ggml_cuda_flash_attn_ext_tile_case<128, 128>(ctx, dst);
+            }
         } break;
         case 192: {
             GGML_ASSERT(V->ne[0] == 128);
@@ -39,7 +53,13 @@ void ggml_cuda_flash_attn_ext_tile(ggml_backend_cuda_context & ctx, ggml_tensor 
         } break;
         case 256: {
             GGML_ASSERT(V->ne[0] == K->ne[0]);
-            ggml_cuda_flash_attn_ext_tile_case<256, 256>(ctx, dst);
+            if (use_quantized_kv && K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q8_0) {
+                ggml_cuda_flash_attn_ext_tile_case<256, 256, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>(ctx, dst);
+            } else if (use_quantized_kv && K->type == GGML_TYPE_Q4_0 && V->type == GGML_TYPE_Q4_0) {
+                ggml_cuda_flash_attn_ext_tile_case<256, 256, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0>(ctx, dst);
+            } else {
+                ggml_cuda_flash_attn_ext_tile_case<256, 256>(ctx, dst);
+            }
         } break;
         case 320: {
             GGML_ASSERT(V->ne[0] == 256);
