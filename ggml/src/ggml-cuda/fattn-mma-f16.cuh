@@ -1936,7 +1936,7 @@ static constexpr __host__ __device__ bool ggml_cuda_flash_attn_ext_mma_f16_may_u
            (DKQ == 256 && DV == 256 && ncols1 == 8 && ncols2 == 8);
 }
 
-template<int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap, bool V_is_K_view, bool use_sparse>
+template<int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap, bool V_is_K_view, bool use_sparse, bool use_kv_rows>
 __launch_bounds__(ggml_cuda_fattn_mma_get_nthreads(DKQ, DV, ncols1*ncols2), ggml_cuda_fattn_mma_get_occupancy(DKQ, DV, ncols1*ncols2))
 static __global__ void flash_attn_ext_f16(
         const char * Q_ptr,
@@ -2081,7 +2081,7 @@ static __global__ void flash_attn_ext_f16(
         const half2 * V_h2 = V_is_K_view ? K_h2 : (const half2 *) (V + nb23*sequence + nb22*z_KV);
         const float * sinks_f = sinks ? (const float *) sinks + zt_Q : nullptr;
         const int32_t * indices = use_sparse ? sparse_indices + (int64_t(sequence % ne33)*iter_j + jt)*ne11 :
-                                  KV_rows_ptr ? KV_rows_ptr + int64_t(sequence)*ne11 : nullptr;
+                                      use_kv_rows && KV_rows_ptr ? KV_rows_ptr + int64_t(sequence)*ne11 : nullptr;
 
         const float slope = ncols2 == 1 ? get_alibi_slope(max_bias, zt_Q, n_head_log2, m0, m1) : 1.0f;
 
@@ -2135,7 +2135,7 @@ static __global__ void flash_attn_ext_f16(
     const half2 * V_h2 = V_is_K_view ? K_h2 : (const half2 *) (V + nb23*sequence + nb22*z_KV);
     const float * sinks_f = sinks ? (const float *) sinks + zt_Q : nullptr;
     const int32_t * indices = use_sparse ? sparse_indices + (int64_t(sequence % ne33)*iter_j + jt)*ne11 :
-                              KV_rows_ptr ? KV_rows_ptr + int64_t(sequence)*ne11 : nullptr;
+                              use_kv_rows && KV_rows_ptr ? KV_rows_ptr + int64_t(sequence)*ne11 : nullptr;
 
     const float slope = ncols2 == 1 ? get_alibi_slope(max_bias, zt_Q, n_head_log2, m0, m1) : 1.0f;
 
@@ -2168,8 +2168,8 @@ static __global__ void flash_attn_ext_f16(
 
 bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(const int cc, const ggml_tensor * dst, const int ncols1, const int ncols2);
 
-template <int DKQ, int DV, int ncols1, int ncols2>
-void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+template <int DKQ, int DV, int ncols1, int ncols2, bool use_kv_rows>
+static void ggml_cuda_flash_attn_ext_mma_f16_case_impl(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * KQV = dst;
     const int id = ggml_cuda_get_device();
     const int cc = ggml_cuda_info().devices[id].cc;
@@ -2223,7 +2223,7 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
         if constexpr (ggml_cuda_flash_attn_ext_mma_f16_may_use_sparse(DKQ, DV, ncols1, ncols2)) {
             if (ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(cc, dst, ncols1, ncols2)) {
                 constexpr bool use_sparse_kernel = true;
-                fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel>;
+                fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel, use_kv_rows>;
                 use_sparse = true;
 
                 static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
@@ -2233,7 +2233,7 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
                 }
             } else {
                 constexpr bool use_sparse_kernel = false;
-                fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel>;
+                fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel, use_kv_rows>;
 
                 static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
                 if (!shared_memory_limit_raised[id]) {
@@ -2245,7 +2245,7 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
 #endif // !defined(GGML_USE_MUSA)
         {
             constexpr bool use_sparse_kernel = false;
-            fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel>;
+            fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel, use_kv_rows>;
 
             static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
             if (!shared_memory_limit_raised[id]) {
@@ -2256,7 +2256,7 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
     } else {
         constexpr bool use_logit_softcap = true;
         constexpr bool use_sparse_kernel = false;
-        fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel>;
+        fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel, use_kv_rows>;
 
         static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
         if (!shared_memory_limit_raised[id]) {
@@ -2268,6 +2268,21 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
     const bool async_kv_preload = nstages == 2 && !use_sparse;
     launch_fattn<DV, ncols1, ncols2>
         (ctx, dst, fattn_kernel, nwarps, nbytes_shared_total, nbatch_fa, true, true, true, use_sparse, warp_size_host, async_kv_preload);
+}
+
+template <int DKQ, int DV, int ncols1, int ncols2>
+void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+#if defined(GGML_USE_HIP)
+    if constexpr (DKQ == 256 && DV == 256) {
+        // Avoid row-gather register pressure for the contiguous HIP path. Keep
+        // the shared-memory attribute state separate for each kernel variant.
+        if (!dst->src[5]) {
+            ggml_cuda_flash_attn_ext_mma_f16_case_impl<DKQ, DV, ncols1, ncols2, false>(ctx, dst);
+            return;
+        }
+    }
+#endif
+    ggml_cuda_flash_attn_ext_mma_f16_case_impl<DKQ, DV, ncols1, ncols2, true>(ctx, dst);
 }
 
 
