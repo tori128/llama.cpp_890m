@@ -302,7 +302,8 @@ jobs:
           [[ "$commit" =~ ^[a-f0-9]{40}$ ]]
           git merge-base --is-ancestor "$commit" HEAD
           git diff --quiet "$commit" HEAD -- . ":(exclude)docs/development/benchmarks/$BENCHMARK_REPORT"
-          grep -Fx "CI build commit: \`$commit\`" "docs/development/benchmarks/$BENCHMARK_REPORT"
+          git log -1 --format=%B -- "docs/development/benchmarks/$BENCHMARK_REPORT" \
+            | git interpret-trailers --parse | grep -Fx "CI-Build-Commit: $commit"
           printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
       - name: Download build artifacts
         uses: actions/download-artifact@v6
