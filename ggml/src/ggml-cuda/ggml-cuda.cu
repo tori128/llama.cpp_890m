@@ -6875,11 +6875,8 @@ static bool ggml_backend_cuda_device_offload_op(ggml_backend_dev_t dev, const gg
     return get_op_batch_size(op) >= dev_ctx->op_offload_min_batch_size;
 }
 
-static ggml_backend_event_t ggml_backend_cuda_device_event_new(ggml_backend_dev_t dev) {
-#ifdef GGML_CUDA_NO_PEER_COPY
-    GGML_UNUSED(dev);
-    return nullptr;
-#else
+#if !defined(GGML_CUDA_NO_PEER_COPY) || defined(GGML_USE_HIP)
+static ggml_backend_event_t ggml_backend_cuda_device_event_new_local(ggml_backend_dev_t dev) {
     ggml_backend_cuda_device_context * dev_ctx = (ggml_backend_cuda_device_context *)dev->context;
 
     ggml_cuda_set_device(dev_ctx->device);
@@ -6891,6 +6888,15 @@ static ggml_backend_event_t ggml_backend_cuda_device_event_new(ggml_backend_dev_
         /* .device  = */ dev,
         /* .context = */ event,
     };
+}
+#endif
+
+static ggml_backend_event_t ggml_backend_cuda_device_event_new(ggml_backend_dev_t dev) {
+#ifdef GGML_CUDA_NO_PEER_COPY
+    GGML_UNUSED(dev);
+    return nullptr;
+#else
+    return ggml_backend_cuda_device_event_new_local(dev);
 #endif
 }
 
@@ -7037,6 +7043,11 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;
     }
+#if defined(GGML_USE_HIP) && defined(GGML_CUDA_NO_PEER_COPY)
+    if (strcmp(name, "ggml_backend_event_new_local") == 0) {
+        return (void *)ggml_backend_cuda_device_event_new_local;
+    }
+#endif
     return nullptr;
 }
 

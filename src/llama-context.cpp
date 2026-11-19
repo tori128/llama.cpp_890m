@@ -1499,6 +1499,23 @@ ggml_backend_t llama_context::backend_from_dev(ggml_backend_dev_t dev) const {
     return nullptr;
 }
 
+// Row transfer events are recorded and waited on only by backends for the
+// buffer's device. Keep the HIP scheduler's peer-copy policy independent.
+static ggml_backend_event_t llama_backend_event_new_local(ggml_backend_dev_t dev) {
+    if (auto event = ggml_backend_event_new(dev)) {
+        return event;
+    }
+    if (dev && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+        if (auto reg = ggml_backend_dev_backend_reg(dev)) {
+            using create_event_t = ggml_backend_event_t (*)(ggml_backend_dev_t);
+            if (auto create = reinterpret_cast<create_event_t>(ggml_backend_reg_get_proc_address(reg, "ggml_backend_event_new_local"))) {
+                return create(dev);
+            }
+        }
+    }
+    return nullptr;
+}
+
 void llama_context::layer_inp_dev_alloc() {
     synchronize();
 
@@ -1549,8 +1566,8 @@ void llama_context::layer_inp_dev_alloc() {
 
     layer_inp_backend = layer_inp_dev_dev ? backend_from_dev(layer_inp_dev_dev) : nullptr;
     if (layer_inp_backend && !ev_layer_inp_written) {
-        ev_layer_inp_written.reset(ggml_backend_event_new(layer_inp_dev_dev));
-        ev_layer_inp_read.reset(ggml_backend_event_new(layer_inp_dev_dev));
+        ev_layer_inp_written.reset(llama_backend_event_new_local(layer_inp_dev_dev));
+        ev_layer_inp_read.reset(llama_backend_event_new_local(layer_inp_dev_dev));
         ev_layer_inp_read_recorded = false;
     }
 }
@@ -1605,8 +1622,8 @@ bool llama_context::h_nextn_dev_alloc() {
     }
 
     if (!ev_h_nextn_written) {
-        ev_h_nextn_written.reset(ggml_backend_event_new(h_nextn_dev_dev));
-        ev_h_nextn_read.reset(ggml_backend_event_new(h_nextn_dev_dev));
+        ev_h_nextn_written.reset(llama_backend_event_new_local(h_nextn_dev_dev));
+        ev_h_nextn_read.reset(llama_backend_event_new_local(h_nextn_dev_dev));
     }
     if (!ev_h_nextn_written || !ev_h_nextn_read) {
         return fail("the device has no events");
