@@ -172,6 +172,8 @@ struct server_tokens {
 
     using prefix_hash = std::array<uint8_t, 32>; // SHA-256
 
+    bool has_media() const { return !map_idx_to_media.empty(); }
+
 private: // disallow accessing these members directly, risking out-of-sync
 
     // map a **start** index in tokens to the image chunk

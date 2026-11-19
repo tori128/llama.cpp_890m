@@ -552,6 +552,7 @@ struct server_slot {
         }
 
         return task->type == other_slot.task->type
+            && can_speculate() == other_slot.can_speculate()
             && inp_embd.size() == other_slot.inp_embd.size()
             && are_lora_equal(lora, other_slot.lora);
     }
@@ -1967,6 +1968,14 @@ private:
         }
 
         SLT_DBG(slot, "launching slot : %s\n", safe_json_to_str(slot.to_json()).c_str());
+
+        // Image/audio positions and recurrent draft positions use different coordinate systems.
+        // Use the target model for media requests; text requests keep their configured drafter.
+        common_speculative * request_spec = task.tokens.has_media() ? nullptr : spec.get();
+        if (slot.spec != request_spec) {
+            slot.prompt_clear();
+            slot.spec = request_spec;
+        }
 
         if (task.type == SERVER_TASK_TYPE_TTS) {
             GGML_ASSERT(has_cap_tts()); // should already checked in route handler
@@ -3848,7 +3857,7 @@ private:
                                 llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot.id));
 
                         if (use_ckpt_dft) {
-                            slot.spec_ckpt.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                            slot.spec_ckpt.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
                         }
 
                         slot.spec_prompt = slot.prompt.tokens.get_text_tokens();
@@ -3892,7 +3901,7 @@ private:
 
             if (ctx_dft) {
                 if (use_ckpt_dft) {
-                    GGML_ASSERT(ckpt.load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY));
+                    GGML_ASSERT(ckpt.load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
                 }
 
                 if (!llama_memory_seq_rm(llama_get_memory(ctx_dft), slot.id, ckpt.pos_max + 1, -1)) {
@@ -3911,7 +3920,7 @@ private:
                 if (use_ckpt_tgt) {
                     //const int64_t t_start = ggml_time_us();
 
-                    ckpt.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                    ckpt.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
 
                     //const int64_t t_total = ggml_time_us() - t_start;
                     //printf("checkpoint total: %f ms\n", t_total / 1000.0);
@@ -3923,7 +3932,7 @@ private:
                 }
 
                 if (use_ckpt_dft) {
-                    ckpt.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                    ckpt.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
                 }
             }
         });
@@ -4707,7 +4716,7 @@ private:
         if (spec) {
             bool ok = true;
             queue_tasks.yield_to_queue([&]() {
-                ok = common_speculative_process(spec.get(), batch.view);
+                ok = common_speculative_process(batch.slot_batched->spec, batch.view);
             });
 
             if (!ok) {
@@ -4930,10 +4939,10 @@ private:
 
                         SLT_DBG(slot, "restoring speculative checkpoint (pos_min = %d, pos_max = %d, size = %zu)\n", ckpt.pos_min, ckpt.pos_max, ckpt.size());
 
-                        GGML_ASSERT(ckpt.load_tgt(slot.ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY));
+                        GGML_ASSERT(ckpt.load_tgt(slot.ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
 
                         if (slot.ctx_dft) {
-                            GGML_ASSERT(ckpt.load_dft(slot.ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY));
+                            GGML_ASSERT(ckpt.load_dft(slot.ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
                         }
 
                         slot.mem.seq_rm(slot.id, ckpt.pos_max + 1, -1);

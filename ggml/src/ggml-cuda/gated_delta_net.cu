@@ -94,7 +94,11 @@ gated_delta_net_cuda(const float * q,
         }
 
         if constexpr (!KDA) {
+#ifdef GGML_USE_HIP
+            const float g_val = __expf(*g_t);
+#else
             const float g_val = expf(*g_t);
+#endif
 
             // kv[col] = (S^T @ k)[col] = sum_i S[i][col] * k[i]
             float kv_shard = 0.0f;

@@ -11964,6 +11964,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // Dense speculative verification around the small-batch MMVQ/MMQ boundary.
+    for (ggml_type type_a : { GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ3_S, GGML_TYPE_Q2_K }) {
+        for (int n : {3, 4, 5, 8}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 1023, n, 5120, {1, 1}, {1, 1}));
+        }
+    }
+
     // The SYCL backend picks between one and two output rows per subgroup by row count when there
     // are two destination columns (Q4_K_MMVQ_ROW_PAIR_MIN_NROWS in ggml-sycl/mmvq.cpp). Cover both
     // sides of that boundary, including an odd row count above it for the row-pair tail.
@@ -13903,6 +13910,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     for (int n : {1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 24, 25, 32, 33}) {
         test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_K, GGML_TYPE_F32, 4096, n, 14336, {1, 1}, {1, 1}));
         test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_K, GGML_TYPE_F32, 14336, n, 4096, {1, 1}, {1, 1}));
+    }
+
+    // Dense speculative verification at full model matrix sizes.
+    for (ggml_type type_a : { GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ3_S, GGML_TYPE_Q2_K }) {
+        for (int n : {3, 4, 5, 8}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 5120, n, 17408, {1, 1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 17408, n, 5120, {1, 1}, {1, 1}));
+        }
     }
 
     // Q4_K multi-column mat-vec

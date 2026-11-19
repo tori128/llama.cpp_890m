@@ -671,7 +671,8 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
 
         // output
         if (std::regex_match(tensor_name, pattern_output_weight)) {
-            if (is_dsv4) {
+            const char * mirror_output = getenv("LLAMA_TP_MIRROR_OUTPUT");
+            if (is_dsv4 || (ud->model->arch == LLM_ARCH_QWEN35 && mirror_output && strcmp(mirror_output, "1") == 0)) {
                 return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_MIRRORED);
             }
             return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1);

@@ -1475,6 +1475,16 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     struct ggml_tensor * tensor = ggml_dup_tensor(ctx, &t_meta);
     ggml_set_name(tensor, ggml_get_name(&t_meta));
 
+    llm_tensor weight_tensor = tn.tensor;
+    if (tn.tensor == LLM_TENSOR_TOKEN_EMBD && (flags & TENSOR_DUPLICATED)) {
+        weight_tensor = LLM_TENSOR_OUTPUT;
+    }
+    const bool is_weight = tn.suffix == nullptr || strcmp(tn.suffix, "weight") == 0;
+    const ggml_op weight_op = llm_tensor_info_for(weight_tensor).op;
+    if (is_weight && (weight_op == GGML_OP_MUL_MAT || weight_op == GGML_OP_MUL_MAT_ID)) {
+        tensor->flags |= GGML_TENSOR_FLAG_PAD_ROWS;
+    }
+
     if (duplicated) {
         size_data += ggml_nbytes(&t_meta);
     } else {
@@ -1793,6 +1803,13 @@ bool llama_model_loader::load_all_data(
 
         size_t n_size = ggml_nbytes(cur);
 
+        const size_t packed_row = ggml_row_size(cur->type, cur->ne[0]);
+        const size_t n_rows = ggml_nelements(cur) / cur->ne[0];
+        const bool row_padded = cur->nb[1] != packed_row;
+        if (row_padded) {
+            n_size = packed_row * n_rows;
+        }
+
         const bool from_mapping = use_mmap || lazy.has(cur);
 
         if (from_mapping) {
@@ -1828,6 +1845,8 @@ bool llama_model_loader::load_all_data(
                 auto & mmap_used = mmaps_used[weight->idx];
                 mmap_used.first  = std::min(mmap_used.first,  weight->offs);
                 mmap_used.second = std::max(mmap_used.second, weight->offs + n_size);
+            } else if (row_padded) {
+                ggml_backend_tensor_set_2d(cur, data, 0, packed_row, n_rows, cur->nb[1], packed_row);
             } else {
                 ggml_backend_tensor_set(cur, data, 0, n_size);
             }
@@ -1844,7 +1863,7 @@ bool llama_model_loader::load_all_data(
                 }
             } else {
                 // If upload_backend is valid load the tensor in chunks to pinned memory and upload the buffers asynchronously to the GPU.
-                if (upload_backend) {
+                if (upload_backend && !row_padded) {
                     size_t offset = weight->offs;
                     alignment = file->read_alignment();
                     size_t aligned_offset = offset & ~(alignment - 1);
@@ -1919,7 +1938,11 @@ bool llama_model_loader::load_all_data(
                     file->read_raw_unsafe(read_dst, read_size);
 
                     const uint8_t * data = read_dst + pad;
-                    ggml_backend_tensor_set(cur, data, 0, n_size);
+                    if (row_padded) {
+                        ggml_backend_tensor_set_2d(cur, data, 0, packed_row, n_rows, cur->nb[1], packed_row);
+                    } else {
+                        ggml_backend_tensor_set(cur, data, 0, n_size);
+                    }
                     if (check_tensors && !ggml_validate_row_data(cur->type, data, n_size)) {
                         throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));
                     }

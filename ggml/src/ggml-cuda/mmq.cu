@@ -257,6 +257,16 @@ void ggml_cuda_mul_mat_q(
         }
 
         J_best = ggml_cuda_mmq_get_J_best(src0->type, ncols_opt, fallback, cc, smpbo, prec_src1, &nthreads_best);
+
+        static const char * mmq_id_j_env = getenv("GGML_CUDA_MMQ_ID_J");
+        const int J_forced = ids && mmq_id_j_env ? atoi(mmq_id_j_env) : 0;
+        if (J_forced >= 8 && J_forced <= 128 && J_forced % 8 == 0) {
+            const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(src0->type, J_forced, fallback, cc, prec_src1);
+            if (config.type != GGML_TYPE_COUNT && mmq_get_nbytes_shared(config, cc) <= smpbo) {
+                J_best = J_forced;
+                nthreads_best = config.nthreads;
+            }
+        }
     }
     GGML_ASSERT(J_best > 0);
 
