@@ -1,5 +1,5 @@
 name: Unified build artifacts
-run-name: ${{ inputs.release_tag || 'Build distribution artifacts' }}
+run-name: ${{ inputs.release_tag || (inputs.upstream_ref != '' && 'Build upstream ROCm for comparison') || 'Build distribution artifacts' }}
 
 # Build public runtime variants on an explicit request. Hardware execution is
 # validated locally; these artifacts verify compilation and provide binaries.
@@ -22,6 +22,10 @@ on:
         description: Sanitized benchmark report filename from docs/development/benchmarks
         required: false
         type: string
+      upstream_ref:
+        description: Upstream ancestor SHA to build for a Linux ROCm comparison
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -30,18 +34,30 @@ jobs:
   public-audit:
     name: Public-data audit
     runs-on: ubuntu-24.04
+    outputs:
+      source_commit: ${{ steps.audit.outputs.source_commit }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Check newly published files
+        id: audit
         shell: bash
         env:
           BENCHMARK_REPORT: ${{ inputs.benchmark_report }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref }}
         run: |
           set -euo pipefail
+          source_commit="$GITHUB_SHA"
+          if [ -n "$UPSTREAM_REF" ]; then
+            test -z "$RELEASE_TAG" && test -z "$BENCHMARK_REPORT"
+            [[ "$UPSTREAM_REF" =~ ^[a-f0-9]{40}$ ]]
+            git merge-base --is-ancestor "$UPSTREAM_REF" "$GITHUB_SHA"
+            source_commit="$UPSTREAM_REF"
+          fi
+          printf 'source_commit=%s\n' "$source_commit" >> "$GITHUB_OUTPUT"
           if [ -n "$RELEASE_TAG" ]; then
             [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
             [[ "$BENCHMARK_REPORT" =~ ^[A-Za-z0-9._-]+\.md$ ]]
@@ -67,6 +83,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.public-audit.outputs.source_commit }}
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -103,21 +121,23 @@ jobs:
             -DLLAMA_BUILD_TESTS=ON
           cmake --build build-rocm -j "$(nproc)"
       - name: Package
+        env:
+          SOURCE_COMMIT: ${{ needs.public-audit.outputs.source_commit }}
         run: |
           test -x build-rocm/bin/llama-server
           mkdir -p dist
-          printf 'commit: %s\nbuilt: %s\nplatform: Linux\nbackend: ROCm HIP\ntargets: gfx1150, gfx1151, gfx1102\nruntime: ROCm 10.0.0\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > build-rocm/bin/MANIFEST.txt
+          printf 'commit: %s\nbuilt: %s\nplatform: Linux\nbackend: ROCm HIP\ntargets: gfx1150, gfx1151, gfx1102\nruntime: ROCm 10.0.0\n' "$SOURCE_COMMIT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > build-rocm/bin/MANIFEST.txt
           tar -C build-rocm/bin -czf dist/llama-unified-linux-rocm-gfx1150-gfx1151-gfx1102.tar.gz .
           ( cd dist && sha256sum *.tar.gz > SHA256SUMS-linux-rocm.txt )
       - uses: actions/upload-artifact@v6
         with:
-          name: llama-unified-${{ github.sha }}-linux-rocm-gfx1150-gfx1151-gfx1102
+          name: ${{ inputs.upstream_ref != '' && 'llama-upstream' || 'llama-unified' }}-${{ needs.public-audit.outputs.source_commit }}-linux-rocm-gfx1150-gfx1151-gfx1102
           path: dist/
           retention-days: 90
 
   linux-vulkan:
     name: Linux Vulkan
-    if: ${{ inputs.release_tag == '' }}
+    if: ${{ inputs.release_tag == '' && inputs.upstream_ref == '' }}
     needs: public-audit
     runs-on: ubuntu-24.04
     steps:
@@ -156,7 +176,7 @@ jobs:
 
   windows-vulkan:
     name: Windows Vulkan
-    if: ${{ inputs.release_tag == '' }}
+    if: ${{ inputs.release_tag == '' && inputs.upstream_ref == '' }}
     needs: public-audit
     runs-on: windows-2025
     env:
@@ -203,7 +223,7 @@ jobs:
 
   windows-rocm:
     name: Windows ROCm (gfx1150, gfx1151)
-    if: ${{ inputs.release_tag == '' }}
+    if: ${{ inputs.release_tag == '' && inputs.upstream_ref == '' }}
     needs: public-audit
     runs-on: windows-2022
     env:
